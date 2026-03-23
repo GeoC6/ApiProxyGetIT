@@ -27,3 +27,7 @@ Thumbs.db
 # Base de datos local
 cache.db
 cached-images/
+
+# Archivos locales
+test.bat
+USB001
