@@ -51,17 +51,22 @@ router.get('/search', async (req, res) => {
 
         // Auto-sync si nunca se ha hecho o expiró
         if (!lastSync || Date.now() - lastSync > SYNC_TTL) {
-            try { await syncFromOdoo(); } catch (e) { log.warn('Sync fallido, usando cache existente'); }
+            try { await syncFromOdoo(); } catch (e) { log.warn(`Sync fallido: ${e.message}`); }
         }
 
         const term = `%${q.toLowerCase()}%`;
 
         const customers = await new Promise((resolve, reject) => {
+            const vatTerm = `%${q.replace(/[.\-]/g, '')}%`;
             db.all(`
                 SELECT id, name, vat, email, phone, street, city, giro FROM customers
-                WHERE LOWER(name) LIKE ? OR LOWER(REPLACE(REPLACE(vat, '.', ''), '-', '')) LIKE LOWER(REPLACE(REPLACE(?, '%', ''), '-', ''))
+                WHERE LOWER(name) LIKE ?
+                OR LOWER(REPLACE(REPLACE(vat, '.', ''), '-', '')) LIKE LOWER(?)
                 ORDER BY name LIMIT 20
-            `, [term, q], (err, rows) => err ? reject(err) : resolve(rows || []));
+            `, [term, vatTerm], (err, rows) => {
+                if (err) { log.error(`[customers/search] SQL error: ${err.message}`); return reject(err); }
+                resolve(rows || []);
+            });
         });
 
         res.json({ success: true, customers });
