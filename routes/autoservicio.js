@@ -139,14 +139,14 @@ function buildDTEData(transactionData, tipoDTE = 39, invoiceCustomer = null, tot
                 Acteco: session_data.company_data?.acteco || '471100',
                 DirOrigen: session_data.company_data?.street || 'N/A',
                 CmnaOrigen: session_data.company_data?.city || 'N/A',
-                CdgVendedor: "pos"
+                CdgVendedor: session_data.company_data?.cashier_name || "pos"
             },
             Receptor,
             Totales
         },
         infoPagos: {
             Propina: parseFloat(sale_data.tip_amount || 0),
-            CdgVendedor: "autoservicio",
+            CdgVendedor: session_data.company_data?.cashier_name || "autoservicio",
             AjusteSencillo: 0,
             Vuelto: 0,
             Pagos: [{
@@ -165,7 +165,7 @@ function buildDTEData(transactionData, tipoDTE = 39, invoiceCustomer = null, tot
             dteData.DscRcgGlobal.push({
                 NroLinDR: idx + 1,
                 TpoMov: 'D',
-                GlosaDR: discount.promotion_name,
+                GlosaDR: "Descuento",
                 TpoValor: '$',
                 ValorDR: Math.round(discount.discount_amount)
             });
@@ -544,7 +544,8 @@ router.post('/create-refund', async (req, res) => {
             original_date,
             reason = 'Anulación de venta',
             company_data,
-            lines = []
+            lines = [],
+            partner_id = null
         } = req.body;
 
         if (!session_id || !original_folio) {
@@ -556,7 +557,7 @@ router.post('/create-refund', async (req, res) => {
 
         const sessionId = parseInt(session_id);
         const today = new Date().toISOString().split('T')[0];
-        const refDate = original_date ? original_date.split('T')[0] : today;
+        const refDate = original_date ? original_date.split('T')[0].split(' ')[0] : today;
         const tipoDTEOrig = parseInt(original_tipo_dte);
 
         // Calcular total desde las líneas seleccionadas
@@ -597,7 +598,7 @@ router.post('/create-refund', async (req, res) => {
                     Acteco: company_data?.acteco || '471100',
                     DirOrigen: company_data?.street || 'N/A',
                     CmnaOrigen: company_data?.city || 'N/A',
-                    CdgVendedor: "pos"
+                    CdgVendedor: company_data?.cashier_name || "pos"
                 },
                 Receptor: {
                     RUTRecep: "66666666-6",
@@ -618,7 +619,7 @@ router.post('/create-refund', async (req, res) => {
             }],
             infoPagos: {
                 Propina: 0,
-                CdgVendedor: "pos",
+                CdgVendedor: company_data?.cashier_name || "pos",
                 AjusteSencillo: 0,
                 Vuelto: 0,
                 Pagos: [{ desc: "DEVOLUCION", monto: totalAmount }]
@@ -652,6 +653,7 @@ router.post('/create-refund', async (req, res) => {
             original_folio: original_folio,
             folio_nc: folioNC,
             lines: lines,
+            partner_id: partner_id,
             company_data: company_data
         }, { timeout: 10000 }).then(r => {
             if (r.data?.success) {
