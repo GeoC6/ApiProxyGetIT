@@ -285,7 +285,6 @@ router.get('/sessions/check', async (req, res) => {
         return res.json({ success: true, ...response.data });
     } catch (error) {
         log.warn('Error verificando estado de sesión en Odoo:', error.message);
-        // En caso de error de red no cerramos el frontend
         return res.json({ success: false, is_open: true, error: 'No se pudo contactar al servidor' });
     }
 });
@@ -301,6 +300,40 @@ router.post('/sessions/clear-cache', (req, res) => {
         message: `Cache limpiado exitosamente`,
         sessions_removed: beforeCount
     });
+});
+
+router.post('/cancel-history', async (req, res) => {
+    try {
+        log.info('Proxy: /api/pos/cancel-history → Odoo');
+        
+        const response = await axios.post(`${ODOO_URL}/api/pos/cancel_history`, req.body, {
+            timeout: 15000,
+            headers: { 'Content-Type': 'application/json' }
+        });
+
+        res.json(response.data);
+    } catch (error) {
+        const simpleError = getSimpleErrorMessage(error);
+        log.error('Error en proxy cancel-history:', simpleError);
+        res.status(500).json({ error: simpleError });
+    }
+});
+
+router.post('/discount-history', async (req, res) => {
+    try {
+        log.info('Proxy: /api/pos/discount-history → Odoo');
+        
+        const response = await axios.post(`${ODOO_URL}/api/pos/discount_history`, req.body, {
+            timeout: 15000,
+            headers: { 'Content-Type': 'application/json' }
+        });
+
+        res.json(response.data);
+    } catch (error) {
+        const simpleError = getSimpleErrorMessage(error);
+        log.error('Error en proxy discount-history:', simpleError);
+        res.status(500).json({ error: simpleError });
+    }
 });
 
 export default router;
