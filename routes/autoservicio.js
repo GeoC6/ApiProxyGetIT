@@ -326,8 +326,8 @@ router.post('/create-order', async (req, res) => {
         }
 
         const order = req.body.orders[0];
-        const paymentIds = order.payment.map(p => parseInt(p.id));
-        const isVoucher = isInternalVoucher(paymentIds);
+        const paymentIds = (order.payment || []).map(p => parseInt(p.id));
+        const isVoucher = isInternalVoucher(paymentIds) || !!order.is_internal_voucher;
 
         // Parámetros DTE del frontend
         const tipoDTE = parseInt(order.tipo_dte || 39);
@@ -376,8 +376,79 @@ router.post('/create-order', async (req, res) => {
             log.success(`Orden ${orderResult.orderNumber} guardada con folio ${dteResponse.folio}`);
         }
 
-        printerService.printOrderTicket(orderResult.orderNumber, adaptedData)
+        printerService.printOrderTicket(orderResult.orderNumber, adaptedData, { isVoucher, voucherNumber })
             .catch(err => log.error('Error imprimiendo ticket de orden:', err.message));
+
+        if (isVoucher) {
+            (async () => {
+                try {
+                    const xsignBase = (await getXSignUrl()).replace(/\/sign\/\d+.*$/, '');
+                    const company = adaptedData.session_data?.company_data || {};
+                    const products = adaptedData.sale_data?.products || [];
+                    const date = new Date().toLocaleDateString('es-CL');
+                    const time = new Date().toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' });
+
+                    const devLines = products.filter(p => p.cant < 0);
+                    const posLines = products.filter(p => p.cant > 0);
+                    const discounts = adaptedData.sale_data?.discounts || [];
+
+                    const detalle = [];
+                    detalle.push({ tipo: 'Titulo', contenido: 'VALE INTERNO' });
+                    detalle.push({ tipo: 'TextoCentrado', contenido: company.name || '' });
+                    detalle.push({ tipo: 'TextoCentrado', contenido: `RUT: ${company.vat || ''}` });
+                    detalle.push({ tipo: 'TextoCentrado', contenido: `${company.street || ''}, ${company.city || ''}` });
+                    detalle.push({ tipo: 'TextoCentrado', contenido: '--------------------------------' });
+                    detalle.push({ tipo: 'TextoCentrado', contenido: `N° ${voucherNumber}` });
+                    detalle.push({ tipo: 'TextoCentrado', contenido: `${date}  ${time}` });
+                    detalle.push({ tipo: 'TextoCentrado', contenido: '--------------------------------' });
+
+                    if (devLines.length > 0) {
+                        detalle.push({ tipo: 'TextoCentrado', contenido: '-- DEVUELTO --' });
+                        devLines.forEach(p => {
+                            const price = `$${Math.abs(Math.round(p.price * p.cant)).toLocaleString('es-CL')}`;
+                            detalle.push({ tipo: 'TextoCentrado', contenido: `${Math.abs(p.cant)}x ${p.name}  ${price}` });
+                        });
+                    }
+
+                    if (posLines.length > 0) {
+                        detalle.push({ tipo: 'TextoCentrado', contenido: '-- ENTREGADO --' });
+                        posLines.forEach(p => {
+                            const price = `$${Math.round(p.price * p.cant).toLocaleString('es-CL')}`;
+                            detalle.push({ tipo: 'TextoCentrado', contenido: `${p.cant}x ${p.name}  ${price}` });
+                        });
+                    }
+
+                    // Netear descuentos por nombre de promoción: si se cancelan no se muestran
+                    const discountMap = {};
+                    discounts.forEach(d => {
+                        const key = d.promotion_name || 'Promocion';
+                        discountMap[key] = (discountMap[key] || 0) + (d.discount_amount || 0);
+                    });
+                    const netDiscounts = Object.entries(discountMap).filter(([, amt]) => Math.round(amt) !== 0);
+                    if (netDiscounts.length > 0) {
+                        detalle.push({ tipo: 'TextoCentrado', contenido: '--------------------------------' });
+                        netDiscounts.forEach(([nombre, amt]) => {
+                            const signo = amt > 0 ? '-' : '+';
+                            detalle.push({ tipo: 'TextoCentrado', contenido: `Desc. ${nombre}: ${signo}$${Math.round(Math.abs(amt)).toLocaleString('es-CL')}` });
+                        });
+                    }
+
+                    detalle.push({ tipo: 'TextoCentrado', contenido: '--------------------------------' });
+                    detalle.push({ tipo: 'TextoCentrado', contenido: 'TOTAL: $0' });
+                    detalle.push({ tipo: 'TextoCentrado', contenido: 'Intercambio sin cobro de dinero' });
+                    detalle.push({ tipo: 'TextoCentrado', contenido: 'No es documento tributario' });
+
+                    await axios.post(`${xsignBase}/print`, {
+                        nombre: `Vale Interno ${voucherNumber}`,
+                        detalle
+                    }, { timeout: 10000 });
+
+                    log.success(`Recibo vale interno ${voucherNumber} enviado a XSign/print`);
+                } catch (err) {
+                    log.error(`Error imprimiendo recibo vale interno via XSign: ${err.message}`);
+                }
+            })();
+        }
 
         sendToKDS(adaptedData, orderResult.orderNumber, orderResult.transactionId, 'autoservicio')
             .catch(err => log.error('Error enviando a KDS:', err.message));
@@ -693,10 +764,13 @@ function adaptAutoservicioToInternal(frontendData) {
 
     const order = orders[0];
     const { products, payment, data_card, tip_amount, note } = order;
+    const isVoucherOrder = !!order.is_internal_voucher;
 
-    if (!payment || payment.length === 0) {
+    if (!isVoucherOrder && (!payment || payment.length === 0)) {
         throw new Error('No se encontró información de pago');
     }
+
+    const safePayment = payment || [];
 
     const session_data = {
         session_id: parseInt(session_id),
@@ -708,12 +782,12 @@ function adaptAutoservicioToInternal(frontendData) {
             turn: 'COMERCIO',
             acteco: '471100'
         },
-        payment_methods: payment.map(p => ({ id: p.id, monto: p.monto }))
+        payment_methods: safePayment.map(p => ({ id: p.id, monto: p.monto }))
     };
 
     const cardData = data_card || {};
 
-    const totalPayments = payment.reduce((sum, p) => sum + parseFloat(p.monto), 0);
+    const totalPayments = safePayment.reduce((sum, p) => sum + parseFloat(p.monto), 0);
 
     const tbk_data = {
         amount: parseFloat(cardData.res_amount || totalPayments),
@@ -740,7 +814,7 @@ function adaptAutoservicioToInternal(frontendData) {
         tip_amount: parseFloat(tip_amount || 0),
         note: note || "",
         products: [],
-        payments: payment,
+        payments: safePayment,
         discounts: discounts
     };
 

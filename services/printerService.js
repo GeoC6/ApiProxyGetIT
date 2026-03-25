@@ -72,7 +72,7 @@ class PrinterService {
         }
     }
 
-    async printOrderTicket(orderNumber, orderData = null) {
+    async printOrderTicket(orderNumber, orderData = null, options = {}) {
         const printerName = this.getPrinterName();
         const exePath = this.getExePath();
 
@@ -121,20 +121,27 @@ class PrinterService {
                 customerNote = note.trim();
             }
 
+            const { isVoucher = false, voucherNumber = null } = options;
             const products = orderData?.sale_data?.products || [];
             const discounts = orderData?.sale_data?.discounts || [];
             const subtotal = products.reduce((sum, p) => sum + (p.price * p.cant), 0);
             const discountTotal = discounts.reduce((sum, d) => sum + (d.discount_amount || 0), 0);
-            const total = orderData?.sale_data?.total || subtotal - discountTotal;
+            const total = isVoucher ? 0 : (orderData?.sale_data?.total || subtotal - discountTotal);
 
             let ticket = '';
             ticket += CENTER;
             ticket += '================================\n';
             ticket += BOLD_ON + SIZE_DOUBLE;
-            ticket += 'ORDEN CLIENTE\n';
+            ticket += isVoucher ? 'VALE INTERNO\n' : 'ORDEN CLIENTE\n';
             ticket += SIZE_NORMAL + BOLD_OFF;
             ticket += '================================\n';
             ticket += '\n';
+            if (isVoucher && voucherNumber) {
+                ticket += BOLD_ON;
+                ticket += `N° ${voucherNumber}\n`;
+                ticket += BOLD_OFF;
+                ticket += '\n';
+            }
             ticket += SIZE_HUGE;
             ticket += `${orderNumber}\n`;
             ticket += SIZE_NORMAL;

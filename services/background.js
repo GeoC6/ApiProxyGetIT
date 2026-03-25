@@ -284,7 +284,7 @@ async function sendToOdoo(transactionData, dteResponse, isInternalVoucher = fals
             customer_comment: sale_data.note || "",
             dte_folio: isInternalVoucher ? voucherNumber : (dteResponse?.folio || 0),
             dte_json: dteResponse ? JSON.stringify(dteResponse.originalDTE) : null,
-            tipo_dte: isInternalVoucher ? 0 : (dteResponse?.originalDTE?.Encabezado?.IdDoc?.TipoDTE || sale_data.tipo_dte),
+            tipo_dte: isInternalVoucher ? '00' : (dteResponse?.originalDTE?.Encabezado?.IdDoc?.TipoDTE || sale_data.tipo_dte),
             is_internal_voucher: isInternalVoucher,
             internal_voucher_number: isInternalVoucher ? voucherNumber : ''
         }]
@@ -292,7 +292,9 @@ async function sendToOdoo(transactionData, dteResponse, isInternalVoucher = fals
 
     if (sale_data.products && sale_data.products.length > 0) {
         sale_data.products.forEach(product => {
-            if (product.cant > 0) {
+            // Para vale interno incluimos todas las líneas (positivas y negativas).
+            // Para órdenes normales solo incluimos líneas con cantidad positiva.
+            if (product.cant > 0 || isInternalVoucher) {
                 const productData = {
                     product_id: parseInt(product.id),
                     name: product.name,
@@ -322,7 +324,15 @@ async function sendToOdoo(transactionData, dteResponse, isInternalVoucher = fals
     if (discounts.length > 0) {
         discounts.forEach(discount => {
             const affectedIds = (discount.affected_product_ids || []).map(Number);
-            const affectedLines = orderData.orders[0].products.filter(p => affectedIds.includes(p.product_id));
+            // Descuentos positivos → solo líneas qty>0 (venta)
+            // Descuentos negativos (ajuste devolución) → solo líneas qty<0 (devolución)
+            // Esto evita que el subtotalAffected sea 0 cuando hay líneas que se cancelan
+            const affectedLines = orderData.orders[0].products.filter(p => {
+                if (!affectedIds.includes(p.product_id)) return false;
+                if (discount.discount_amount > 0) return p.qty > 0;
+                if (discount.discount_amount < 0) return p.qty < 0;
+                return true;
+            });
             if (!affectedLines.length) return;
 
             const subtotalAffected = affectedLines.reduce((sum, p) => sum + p.price_subtotal, 0);
@@ -392,7 +402,7 @@ async function processTransaction(transaction) {
     try {
         log.info(`Procesando transacción ID: ${transaction.id} (autoservicio)`);
 
-        const isVoucher = isInternalVoucherTransaction(transactionData);
+        const isVoucher = isInternalVoucherTransaction(transactionData) || !!transaction.is_internal_voucher;
         let dteResponse = null;
         let voucherNumber = null;
 
