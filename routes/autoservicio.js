@@ -172,6 +172,17 @@ function buildDTEData(transactionData, tipoDTE = 39, invoiceCustomer = null, tot
         });
     }
 
+    // Descuento por devolución en intercambio (valor del producto devuelto)
+    if (sale_data.exchange_return_amount > 0) {
+        dteData.DscRcgGlobal.push({
+            NroLinDR: dteData.DscRcgGlobal.length + 1,
+            TpoMov: 'D',
+            GlosaDR: "Devolucion de producto",
+            TpoValor: '$',
+            ValorDR: Math.round(sale_data.exchange_return_amount)
+        });
+    }
+
     let lineNumber = 1;
 
     if (sale_data.products && sale_data.products.length > 0) {
@@ -815,7 +826,8 @@ function adaptAutoservicioToInternal(frontendData) {
         note: note || "",
         products: [],
         payments: safePayment,
-        discounts: discounts
+        discounts: discounts,
+        exchange_return_amount: parseFloat(order.exchange_return_amount || 0)
     };
 
     if (products && products.length > 0) {

@@ -294,7 +294,7 @@ async function sendToOdoo(transactionData, dteResponse, isInternalVoucher = fals
         sale_data.products.forEach(product => {
             // Para vale interno incluimos todas las líneas (positivas y negativas).
             // Para órdenes normales solo incluimos líneas con cantidad positiva.
-            if (product.cant > 0 || isInternalVoucher) {
+            if (product.cant > 0 || isInternalVoucher || sale_data.exchange_return_amount > 0) {
                 const productData = {
                     product_id: parseInt(product.id),
                     name: product.name,
