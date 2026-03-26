@@ -336,4 +336,33 @@ router.post('/discount-history', async (req, res) => {
     }
 });
 
+router.post('/cash-operation', async (req, res) => {
+    try {
+        log.info('Proxy: /api/pos/cash-operation → Odoo');
+        
+        const response = await axios.post(`${ODOO_URL}/api/pos/cash_operation`, req.body, {
+            timeout: 15000,
+            headers: { 'Content-Type': 'application/json' }
+        });
+
+        res.json(response.data);
+    } catch (error) {
+        const simpleError = getSimpleErrorMessage(error);
+        log.error('Error en proxy cash-operation:', simpleError);
+        res.status(500).json({ error: simpleError });
+    }
+});
+
+router.post('/denominations', async (req, res) => {
+    try {
+        const response = await axios.post(`${ODOO_URL}/api/pos/denominations`, req.body, {
+            timeout: 15000,
+            headers: { 'Content-Type': 'application/json' }
+        });
+        res.json(response.data);
+    } catch (error) {
+        res.status(500).json({ error: 'Error fetching denominations' });
+    }
+});
+
 export default router;
