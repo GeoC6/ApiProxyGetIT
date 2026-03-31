@@ -302,6 +302,23 @@ router.post('/sessions/clear-cache', (req, res) => {
     });
 });
 
+router.get('/sessions/z-report/data', async (req, res) => {
+    const { session_id } = req.query;
+    if (!session_id) return res.status(400).json({ success: false, error: 'Falta session_id' });
+
+    try {
+        const response = await axios.get(`${ODOO_URL}/get_z_report_data`, {
+            params: { session_id },
+            timeout: 20000
+        });
+        res.json(response.data);
+    } catch (error) {
+        log.error('Error obteniendo datos informe Z:', error.message);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+
 router.post('/cancel-history', async (req, res) => {
     try {
         log.info('Proxy: /api/pos/cancel-history → Odoo');
