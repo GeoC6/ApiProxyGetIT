@@ -382,6 +382,15 @@
                 </div>
 
                 <div class="info-card">
+                    <h3>PIN Local de Caja</h3>
+                    <div class="info-item" style="flex-direction: column; align-items: flex-start; gap: 6px;">
+                        <label for="POS_PIN" style="font-size:0.85rem; color:#555; font-weight:600;">PIN de esta caja</label>
+                        <input id="POS_PIN" type="password" placeholder="Dejar vacío para no restringir" style="width:100%; padding:8px 12px; border:1px solid #ddd; border-radius:8px; font-size:1rem; font-family:monospace;" />
+                        <span style="font-size:0.78rem; color:#888;">Si se configura, solo este PIN podrá abrir sesión en este equipo, aunque sea válido en Odoo.</span>
+                    </div>
+                </div>
+
+                <div class="info-card">
                     <h3>Impresora</h3>
                     <div class="info-item" style="flex-direction: column; align-items: flex-start; gap: 6px;">
                         <label for="PRINTER_TICKET_NAME" style="font-size:0.85rem; color:#555; font-weight:600;">Nombre de la Impresora de Tickets</label>
@@ -417,7 +426,7 @@
 
     <script>
         const API_URL = 'http://localhost:9000';
-        const fields = ['IM30_PORT', 'TBK_URL', 'XSIGN_URL', 'ODOO_URL', 'PRINTER_TICKET_NAME', 'PRINTER_ENABLED'];
+        const fields = ['IM30_PORT', 'TBK_URL', 'XSIGN_URL', 'ODOO_URL', 'PRINTER_TICKET_NAME', 'PRINTER_ENABLED', 'POS_PIN'];
 
         function showStatus(message, type) {
             const statusEl = document.getElementById('statusMessage');

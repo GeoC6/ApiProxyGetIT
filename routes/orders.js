@@ -373,11 +373,16 @@ router.get('/by-folio/:folio', async (req, res) => {
         });
         res.json(response.data);
     } catch (error) {
-        if (error.response?.status === 404) {
+        const status = error.response?.status;
+        const odooError = error.response?.data?.error;
+        if (status === 404) {
             return res.status(404).json({ success: false, error: `No se encontró orden con folio ${folio}` });
         }
+        if (status === 409) {
+            return res.status(409).json({ success: false, error: odooError || 'Este pedido ya tiene una Nota de Crédito asociada.' });
+        }
         log.error('Error buscando orden por folio en Odoo:', error.message);
-        res.status(500).json({ success: false, error: error.message });
+        res.status(500).json({ success: false, error: odooError || error.message });
     }
 });
 

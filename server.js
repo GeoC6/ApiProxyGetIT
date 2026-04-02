@@ -76,7 +76,20 @@ app.post('/authenticate_user', async (req, res) => {
 
 app.post('/pos_validate_session', async (req, res) => {
     try {
-        log.info('Proxy: /pos_validate_session → Odoo');
+        const pinIngresado = (req.body.pin || '').toString().trim();
+        log.info(`Proxy: /pos_validate_session → PIN recibido: ${'*'.repeat(pinIngresado.length)}`);
+
+        const localPin = await getSetting('POS_PIN', null);
+        log.info(`PIN local configurado: ${localPin ? '*'.repeat(localPin.trim().length) : '(sin restricción)'}`);
+
+        if (localPin && localPin.trim() !== '') {
+            if (pinIngresado !== localPin.trim()) {
+                log.error('PIN rechazado por validación local');
+                return res.status(401).json({ error: 'PIN incorrecto' });
+            }
+            log.info('PIN local verificado correctamente');
+        }
+
         const response = await axios.post(`${ODOO_URL}/pos_validate_session`, req.body, {
             timeout: 30000,
             headers: { 'Content-Type': 'application/json' },
@@ -201,6 +214,7 @@ app.get('/api/config', async (req, res) => {
             ODOO_URL: saved.ODOO_URL || process.env.ODOO_URL || 'https://getit.posgo.cl',
             PRINTER_ENABLED: saved.PRINTER_ENABLED || process.env.PRINTER_ENABLED || 'true',
             PRINTER_TICKET_NAME: saved.PRINTER_TICKET_NAME || process.env.PRINTER_TICKET_NAME || '',
+            POS_PIN: saved.POS_PIN || '',
         };
         res.json({ success: true, config });
     } catch (error) {
@@ -210,7 +224,7 @@ app.get('/api/config', async (req, res) => {
 
 app.post('/api/config', async (req, res) => {
     try {
-        const allowed = ['IM30_PORT', 'TBK_URL', 'XSIGN_URL', 'KDS_URL', 'ODOO_URL', 'PRINTER_ENABLED', 'PRINTER_TICKET_NAME'];
+        const allowed = ['IM30_PORT', 'TBK_URL', 'XSIGN_URL', 'KDS_URL', 'ODOO_URL', 'PRINTER_ENABLED', 'PRINTER_TICKET_NAME', 'POS_PIN'];
         const entries = Object.entries(req.body).filter(([key]) => allowed.includes(key));
         await Promise.all(entries.map(([key, value]) => setSetting(key, String(value))));
         log.success(`Configuración actualizada: ${entries.map(([k]) => k).join(', ')}`);

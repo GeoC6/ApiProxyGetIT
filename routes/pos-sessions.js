@@ -1,6 +1,7 @@
 import express from 'express';
 import axios from 'axios';
 import { log } from '../services/logger.js';
+import { getSetting } from '../database.js';
 
 const router = express.Router();
 
@@ -111,6 +112,19 @@ router.post('/sessions/validate', async (req, res) => {
         const userId = user_id || null;
 
         log.info(`Validando sesión para PIN: ${pinStr.replace(/./g, '*')}, user_id: ${userId}`);
+
+        // Verificar PIN local antes de ir a Odoo
+        const localPin = await getSetting('POS_PIN', null);
+        if (localPin && localPin.trim() !== '') {
+            if (pinStr !== localPin.trim()) {
+                log.error('PIN incorrecto (validación local)');
+                return res.status(401).json({
+                    success: false,
+                    error: 'PIN incorrecto'
+                });
+            }
+            log.info('PIN local verificado correctamente');
+        }
 
         const cachedSession = getSessionFromCache(pinStr);
         if (cachedSession) {
