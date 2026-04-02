@@ -130,9 +130,16 @@ function buildDTEData(transactionData, tipoDTE = 39, invoiceCustomer = null, tot
         Encabezado: {
             IdDoc: {
                 TipoDTE: tipoDTE,
-                FchEmis: new Date().toISOString().split('T')[0]
+                FchEmis: new Date().toISOString().split('T')[0],
+                IndServicio: "3"
             },
-            Emisor: {
+            Emisor: tipoDTE === 41 ? {
+                RUTEmisor: session_data.company_data?.vat || '77283971-5',
+                RznSocEmisor: session_data.company_data?.name || 'AUTOSERVICIO',
+                GiroEmisor: session_data.company_data?.turn || 'COMERCIO',
+                DirOrigen: session_data.company_data?.street || 'N/A',
+                CmnaOrigen: session_data.company_data?.city || 'N/A'
+            } : {
                 RUTEmisor: session_data.company_data?.vat || '77283971-5',
                 RznSoc: session_data.company_data?.name || 'AUTOSERVICIO',
                 GiroEmis: session_data.company_data?.turn || 'COMERCIO',
@@ -149,10 +156,10 @@ function buildDTEData(transactionData, tipoDTE = 39, invoiceCustomer = null, tot
             CdgVendedor: session_data.company_data?.cashier_name || "autoservicio",
             AjusteSencillo: 0,
             Vuelto: 0,
-            Pagos: [{
-                desc: tbk_data.card_type === "DB" ? "DEBITO" : "CREDITO",
-                monto: Math.round(tbk_data.amount)
-            }]
+            Pagos: (sale_data.payments || []).filter(p => p.monto > 0).map(p => ({
+                desc: p.name || (tbk_data.card_type === "DB" ? "DEBITO" : "CREDITO"),
+                monto: Math.round(Math.abs(p.monto))
+            }))
         },
         Detalle: [],
         DscRcgGlobal: [],
@@ -191,32 +198,19 @@ function buildDTEData(transactionData, tipoDTE = 39, invoiceCustomer = null, tot
                 let productName = product.name || `Producto ${product.id}`;
                 let descripcion = product.customization || "";
 
+                // Solo incluir extras pagados (is_addition) en la descripción del DTE
                 if (Array.isArray(product.attribute_lines) && product.attribute_lines.length > 0) {
-                    const extrasShort = [];
-                    const extrasFull = [];
+                    const additionsOnly = product.attribute_lines.filter(attr => attr.is_addition);
 
-                    product.attribute_lines.forEach(attr => {
-                        const category = attr.attribute_name || attr.category_name || '';
-                        const ingredient = attr.name || '';
-                        const qty = attr.qty > 1 ? ` x${attr.qty}` : '';
+                    if (additionsOnly.length > 0) {
+                        const extrasShort = additionsOnly.map(attr => {
+                            const qty = attr.qty > 1 ? ` x${attr.qty}` : '';
+                            return (attr.name || '') + qty;
+                        }).filter(Boolean);
 
-                        if (ingredient) {
-                            extrasShort.push(ingredient + qty);
+                        if (extrasShort.length > 0) {
+                            descripcion = extrasShort.join(', ');
                         }
-
-                        if (category && ingredient) {
-                            extrasFull.push(`[${category}] ${ingredient}${qty}`);
-                        } else if (ingredient) {
-                            extrasFull.push(`${ingredient}${qty}`);
-                        }
-                    });
-
-                    if (extrasShort.length > 0) {
-                        productName = `${productName} (${extrasShort.join(', ')})`;
-                    }
-
-                    if (extrasFull.length > 0) {
-                        descripcion = extrasFull.join(', ');
                     }
                 }
 
@@ -224,42 +218,61 @@ function buildDTEData(transactionData, tipoDTE = 39, invoiceCustomer = null, tot
                     descripcion = "Producto personalizado";
                 }
 
-                dteData.Detalle.push({
+                const detalleLine = {
                     NroLinDet: lineNumber++,
-                    CdgItem: {
-                        TpoCodigo: "INT1",
-                        VlrCodigo: product.id.toString()
-                    },
+                    CdgItem: [{ TpoCodigo: "INT1", VlrCodigo: product.id.toString() }],
                     NmbItem: productName,
                     DscItem: descripcion,
                     QtyItem: product.cant,
                     PrcItem: Math.round(product.price),
                     MontoItem: Math.round(product.price * product.cant)
-                });
+                };
+
+                // IndExe: 1 para líneas exentas (tipo 41 = todo exento, o línea marcada is_exempt)
+                if (tipoDTE === 41 || product.is_exempt) {
+                    detalleLine.IndExe = 1;
+                }
+
+                dteData.Detalle.push(detalleLine);
             }
         });
     }
 
     if (dteData.Detalle.length === 0) {
-        dteData.Detalle.push({
+        const fallbackLine = {
             NroLinDet: 1,
-            CdgItem: {
-                TpoCodigo: "INT1",
-                VlrCodigo: "999999"
-            },
+            CdgItem: [{ TpoCodigo: "INT1", VlrCodigo: "999999" }],
             NmbItem: "Venta Autoservicio",
             DscItem: "Venta realizada en sistema autoservicio",
             QtyItem: 1,
             PrcItem: Math.round(sale_data.total),
             MontoItem: Math.round(sale_data.total)
-        });
+        };
+        if (tipoDTE === 41) fallbackLine.IndExe = 1;
+        dteData.Detalle.push(fallbackLine);
     }
 
-    console.log('╔═══════════════════════════════════════════════════════════╗');
-    console.log('║      DTE COMPLETO QUE SE ENVIARÁ A XSIGN                 ║');
-    console.log('╚═══════════════════════════════════════════════════════════╝');
-    console.log(JSON.stringify(dteData, null, 2));
-    console.log('═══════════════════════════════════════════════════════════');
+    // Formato especial para tipo 41: valores como strings, CdgItem como objeto, Detalle como objeto si es una sola línea
+    if (tipoDTE === 41) {
+        dteData.Encabezado.Totales.MntExe = String(dteData.Encabezado.Totales.MntExe);
+        dteData.Encabezado.Totales.MntTotal = String(dteData.Encabezado.Totales.MntTotal);
+
+        dteData.Detalle = dteData.Detalle.map(line => ({
+            ...line,
+            NroLinDet: String(line.NroLinDet),
+            CdgItem: line.CdgItem[0] || line.CdgItem,
+            IndExe: String(line.IndExe || "1"),
+            QtyItem: String(Math.round(line.QtyItem)),
+            PrcItem: String(Math.round(line.PrcItem)),
+            MontoItem: String(Math.round(line.MontoItem))
+        }));
+
+        if (dteData.Detalle.length === 1) {
+            dteData.Detalle = dteData.Detalle[0];
+        }
+    }
+
+    log.info(`DTE tipo ${tipoDTE} JSON completo:\n${JSON.stringify(dteData, null, 2)}`);
 
     return dteData;
 }
@@ -838,7 +851,8 @@ function adaptAutoservicioToInternal(frontendData) {
                 price: parseFloat(product.price_subtotal / product.qty),
                 cant: parseInt(product.qty),
                 customization: product.customization || '',
-                selected_attributes: product.selected_attributes || null
+                selected_attributes: product.selected_attributes || null,
+                is_exempt: product.is_exempt || false
             };
 
             if (product.attribute_lines) {
@@ -848,12 +862,6 @@ function adaptAutoservicioToInternal(frontendData) {
             sale_data.products.push(productData);
         });
     }
-
-    console.log('╔═══════════════════════════════════════════════════════════╗');
-    console.log('║      COMPANY_DATA QUE SE USARÁ EN session_data          ║');
-    console.log('╚═══════════════════════════════════════════════════════════╝');
-    console.log('session_data.company_data:', JSON.stringify(session_data.company_data, null, 2));
-    console.log('═══════════════════════════════════════════════════════════');
 
     log.info('Datos adaptados:');
     log.info(`  Empresa: ${session_data.company_data.name} (${session_data.company_data.vat})`);
