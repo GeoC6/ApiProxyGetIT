@@ -26,6 +26,7 @@ import transbankRouter from './routes/transbankc2c.js';
 import imagesRouter from './routes/images.js';
 import promotionsRouter from './routes/promotions.js';
 import customersRouter from './routes/customers.js';
+import flejesRouter from './routes/flejes.js';
 
 const httpsAgent = new https.Agent({
     keepAlive: true,
@@ -245,6 +246,7 @@ app.use('/api/tbk', transbankRouter);
 app.use('/images', imagesRouter);
 app.use('/api/promotions', promotionsRouter);
 app.use('/api/customers', customersRouter);
+app.use('/api/flejes', flejesRouter);
 
 app.use((err, req, res, next) => {
     log.error('Server error:', err);
