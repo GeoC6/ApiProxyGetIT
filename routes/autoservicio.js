@@ -128,7 +128,12 @@ function buildDTEData(transactionData, tipoDTE = 39, invoiceCustomer = null, tot
 
     const dteData = {
         Encabezado: {
-            IdDoc: {
+            IdDoc: tipoDTE === 41 ? {
+                TipoDTE: tipoDTE,
+                Folio: 0,
+                FchEmis: new Date().toISOString().split('T')[0],
+                IndServicio: "3"
+            } : {
                 TipoDTE: tipoDTE,
                 FchEmis: new Date().toISOString().split('T')[0],
                 IndServicio: "3"
@@ -257,15 +262,20 @@ function buildDTEData(transactionData, tipoDTE = 39, invoiceCustomer = null, tot
         dteData.Encabezado.Totales.MntExe = String(dteData.Encabezado.Totales.MntExe);
         dteData.Encabezado.Totales.MntTotal = String(dteData.Encabezado.Totales.MntTotal);
 
-        dteData.Detalle = dteData.Detalle.map(line => ({
-            ...line,
-            NroLinDet: String(line.NroLinDet),
-            CdgItem: line.CdgItem[0] || line.CdgItem,
-            IndExe: String(line.IndExe || "1"),
-            QtyItem: String(Math.round(line.QtyItem)),
-            PrcItem: String(Math.round(line.PrcItem)),
-            MontoItem: String(Math.round(line.MontoItem))
-        }));
+        dteData.Detalle = dteData.Detalle.map(line => {
+            const mapped = {
+                NroLinDet: String(line.NroLinDet),
+                CdgItem: line.CdgItem[0] || line.CdgItem,
+                IndExe: String(line.IndExe || "1"),
+                NmbItem: line.NmbItem,
+                DscItem: line.DscItem,
+                QtyItem: String(Math.round(line.QtyItem)),
+                PrcItem: String(Math.round(line.PrcItem)),
+                MontoItem: String(Math.round(line.MontoItem))
+            };
+            if (!mapped.DscItem) delete mapped.DscItem;
+            return mapped;
+        });
 
         if (dteData.Detalle.length === 1) {
             dteData.Detalle = dteData.Detalle[0];
