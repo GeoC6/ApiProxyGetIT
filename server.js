@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'url';
 import path from 'path';
 import dotenv from 'dotenv';
+import compression from 'compression';
 import https from 'https';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -41,6 +42,11 @@ const app = express();
 const PORT = process.env.PORT || 9000;
 const ODOO_URL = process.env.ODOO_URL || 'https://getit.posgo.cl';
 
+// Buffer temporal de productos por sesión (TTL 3 min, solo dura el login)
+const PRODUCTS_BUFFER = new Map();
+const PRODUCTS_BUFFER_TTL = 3 * 60 * 1000;
+
+app.use(compression());
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true }));
@@ -92,15 +98,55 @@ app.post('/pos_validate_session', async (req, res) => {
         }
 
         const response = await axios.post(`${ODOO_URL}/pos_validate_session`, req.body, {
-            timeout: 30000,
+            timeout: 60000,
             headers: { 'Content-Type': 'application/json' },
             httpsAgent: httpsAgent
         });
-        res.json(response.data);
+
+        const fullData = response.data;
+
+        // Si vino autenticado, separar productos del resto
+        if (fullData && fullData.authenticated) {
+            const sessionId = fullData.session_id || fullData.pos_session_id;
+            const products = fullData.products || [];
+            const categories = fullData.categories || [];
+            const multi_barcodes = fullData.multi_barcodes || {};
+
+            // Guardar en buffer temporal, el frontend los pedirá en segundo paso
+            PRODUCTS_BUFFER.set(String(sessionId), {
+                products,
+                categories,
+                multi_barcodes,
+                ts: Date.now()
+            });
+
+            // Limpiar buffer expirados
+            for (const [k, v] of PRODUCTS_BUFFER.entries()) {
+                if (Date.now() - v.ts > PRODUCTS_BUFFER_TTL) PRODUCTS_BUFFER.delete(k);
+            }
+
+            // Devolver sin el peso grande
+            const { products: _p, categories: _c, multi_barcodes: _m, ...sessionOnly } = fullData;
+            log.info(`pos_validate_session: sesión ${sessionId} autenticada, productos separados (${products.length})`);
+            return res.json({ ...sessionOnly, products_ready: true });
+        }
+
+        res.json(fullData);
     } catch (error) {
         log.error('Error en proxy /pos_validate_session:', error.message);
         res.status(500).json({ success: false, error: error.message });
     }
+});
+
+app.get('/api/pos/session-products', (req, res) => {
+    const sessionId = String(req.query.session_id || '');
+    const entry = PRODUCTS_BUFFER.get(sessionId);
+    if (!entry) {
+        return res.status(404).json({ success: false, error: 'Productos no disponibles, vuelve a iniciar sesión' });
+    }
+    PRODUCTS_BUFFER.delete(sessionId);
+    log.info(`session-products: entregando ${entry.products.length} productos para sesión ${sessionId}`);
+    res.json({ success: true, products: entry.products, categories: entry.categories, multi_barcodes: entry.multi_barcodes });
 });
 
 app.post('/check_session_exists', async (req, res) => {
