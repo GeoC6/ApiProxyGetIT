@@ -259,6 +259,56 @@ class PrinterService {
         }
     }
 
+    async printFleje({ name, price, barcode, sku, printerName }) {
+        const printer = printerName || this.getEnvValue('FLEJE_PRINTER_NAME') || 'POS-80';
+        const exePath = this.getExePath();
+        const codigoBarras = barcode || sku || '';
+
+        const RESET   = `${ESC}@`;
+        const CUT     = `${GS}V\x41\x03`;
+        const SIZE_XL = `${GS}!\x22`; // 3x ancho + 3x alto
+
+        let ticket = '';
+        ticket += RESET;
+        ticket += CENTER;
+        ticket += '\n';
+        ticket += BOLD_ON + SIZE_DOUBLE;
+        ticket += `${name}\n`;
+        ticket += BOLD_OFF + SIZE_NORMAL;
+        ticket += '\n';
+        ticket += BOLD_ON + SIZE_XL;
+        ticket += `$${Number(price).toLocaleString('es-CL')}\n`;
+        ticket += SIZE_NORMAL + BOLD_OFF;
+        ticket += '\n';
+
+        if (codigoBarras) {
+            // Barcode ESC/POS: GS k type data
+            ticket += CENTER;
+            ticket += `${GS}h\x50`;               // barcode height 80 dots
+            ticket += `${GS}w\x02`;               // barcode width module 2
+            ticket += `${GS}H\x02`;               // print HRI below barcode
+            ticket += `${GS}k\x49${String.fromCharCode(codigoBarras.length)}${codigoBarras}`; // CODE128
+            ticket += '\n';
+            ticket += SIZE_NORMAL;
+        }
+
+        ticket += '\n\n\n';
+        ticket += CUT;
+
+        await this.ensureTempDir();
+        const filepath = path.join(this.tempDir, `fleje_${Date.now()}.bin`);
+        await fs.writeFile(filepath, Buffer.from(ticket, 'binary'));
+        log.info(`[Fleje] Imprimiendo "${name}" en "${printer}"`);
+
+        const cmd = `"${exePath}" "${printer}" "${filepath}"`;
+        const { stdout, stderr } = await execAsync(cmd, { timeout: 10000 });
+        if (stderr) log.warn(`[Fleje] stderr: ${stderr.trim()}`);
+        if (!stdout.includes('OK')) throw new Error(`PrinterHelper: ${stdout.trim()}`);
+
+        log.success(`[Fleje] Impreso OK`);
+        setTimeout(() => fs.unlink(filepath).catch(() => {}), 3000);
+    }
+
     async listAvailablePrinters() {
         const printers = await this.getPrinters();
         if (!printers || printers.length === 0) {
