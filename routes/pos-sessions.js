@@ -396,4 +396,33 @@ router.post('/denominations', async (req, res) => {
     }
 });
 
+router.post('/verify_supervisor_pin', async (req, res) => {
+    try {
+        const response = await axios.post(`${ODOO_URL}/api/pos/verify_supervisor_pin`, req.body, {
+            timeout: 10000,
+            headers: { 'Content-Type': 'application/json' }
+        });
+        res.json(response.data);
+    } catch (error) {
+        res.status(500).json({ success: false, error: getSimpleErrorMessage(error) });
+    }
+});
+
+router.post('/verify_float_override', async (req, res) => {
+    try {
+        log.info('Proxy: /api/pos/verify_float_override → Odoo');
+
+        const response = await axios.post(`${ODOO_URL}/api/pos/verify_float_override`, req.body, {
+            timeout: 15000,
+            headers: { 'Content-Type': 'application/json' }
+        });
+
+        res.json(response.data);
+    } catch (error) {
+        const simpleError = getSimpleErrorMessage(error);
+        log.error('Error en proxy verify_float_override:', simpleError);
+        res.status(500).json({ success: false, error: simpleError });
+    }
+});
+
 export default router;
