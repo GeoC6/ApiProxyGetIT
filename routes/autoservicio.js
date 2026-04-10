@@ -361,7 +361,7 @@ router.post('/create-order', async (req, res) => {
 
         const order = req.body.orders[0];
         const paymentIds = (order.payment || []).map(p => parseInt(p.id));
-        const isVoucher = isInternalVoucher(paymentIds) || !!order.is_internal_voucher;
+        const isVoucher = !!order.is_internal_voucher;
 
         // Parámetros DTE del frontend
         const tipoDTE = parseInt(order.tipo_dte || 39);

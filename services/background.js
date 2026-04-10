@@ -402,7 +402,7 @@ async function processTransaction(transaction) {
     try {
         log.info(`Procesando transacción ID: ${transaction.id} (autoservicio)`);
 
-        const isVoucher = isInternalVoucherTransaction(transactionData) || !!transaction.is_internal_voucher;
+        const isVoucher = !!transaction.is_internal_voucher;
         let dteResponse = null;
         let voucherNumber = null;
 
