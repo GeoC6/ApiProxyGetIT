@@ -53,10 +53,10 @@ class PrinterHelper
                 {
                     IntPtr pUnmanagedBytes = Marshal.AllocCoTaskMem(data.Length);
                     Marshal.Copy(data, 0, pUnmanagedBytes, data.Length);
-                    
+
                     int dwWritten = 0;
                     success = WritePrinter(hPrinter, pUnmanagedBytes, data.Length, out dwWritten);
-                    
+
                     Marshal.FreeCoTaskMem(pUnmanagedBytes);
                     EndPagePrinter(hPrinter);
                 }
@@ -81,27 +81,11 @@ class PrinterHelper
 
         try
         {
-            string content = File.ReadAllText(filePath);
-            
-            // Crear buffer con comandos ESC/POS
-            System.Text.Encoding encoding = System.Text.Encoding.GetEncoding(850);
-            System.Collections.Generic.List<byte> buffer = new System.Collections.Generic.List<byte>();
-            
-            // ESC @ - Inicializar impresora
-            buffer.Add(0x1B);
-            buffer.Add(0x40);
-            
-            // Agregar contenido
-            buffer.AddRange(encoding.GetBytes(content));
-            
-            // GS V 0 - Corte total
-            buffer.Add(0x1D);
-            buffer.Add(0x56);
-            buffer.Add(0x00);
-            
-            // Enviar a impresora
-            bool result = SendBytesToPrinter(printerName, buffer.ToArray());
-            
+            // ReadAllBytes — lee bytes crudos sin ninguna conversión de encoding
+            byte[] data = File.ReadAllBytes(filePath);
+
+            bool result = SendBytesToPrinter(printerName, data);
+
             if (result)
             {
                 Console.WriteLine("OK");

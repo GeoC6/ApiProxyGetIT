@@ -262,36 +262,42 @@ class PrinterService {
     async renderLogoEscPos(imagePath, targetWidth) {
         const { default: Jimp } = await import('jimp');
 
+        const targetW = Math.round(targetWidth / 8) * 8;
         const src = await Jimp.read(imagePath);
-        src.resize(targetWidth, Jimp.AUTO);
+        src.resize(targetW, Jimp.AUTO);
 
-        const paddedHeight = Math.ceil(src.bitmap.height / 8) * 8;
-        const bg = new Jimp(targetWidth, paddedHeight, 0xFFFFFFFF);
-        bg.composite(src, 0, 0);
-        bg.greyscale();
-        bg.contrast(1);
+        const imgWidth  = src.bitmap.width;
+        const imgHeight = src.bitmap.height;
+        const xBytes    = Math.ceil(imgWidth / 8);
+        const raw       = src.bitmap.data; // Buffer RGBA directo, sin getPixelColor
 
-        const width = bg.bitmap.width;
-        const height = bg.bitmap.height;
-        const parts = [];
+        const header = Buffer.from([
+            0x1D, 0x76, 0x30, 0x00,
+            xBytes & 0xFF, (xBytes >> 8) & 0xFF,
+            imgHeight & 0xFF, (imgHeight >> 8) & 0xFF
+        ]);
 
-        parts.push(Buffer.from([0x1B, 0x33, 0x08]));
+        // Bayer 2×2: verde oscuro (grey~75) → negro sólido, naranja (grey~173) → punteado
+        const bayer = [[51, 180], [204, 102]];
 
-        for (let y = 0; y < height; y += 8) {
-            parts.push(Buffer.from([0x1B, 0x2A, 0x00, width & 0xFF, (width >> 8) & 0xFF]));
-            for (let x = 0; x < width; x++) {
-                let b = 0;
-                for (let k = 0; k < 8; k++) {
-                    const p = Jimp.intToRGBA(bg.getPixelColor(x, y + k));
-                    if (p.r * 0.299 + p.g * 0.587 + p.b * 0.114 < 128) b |= (1 << (7 - k));
+        const raster = Buffer.alloc(xBytes * imgHeight, 0);
+        for (let y = 0; y < imgHeight; y++) {
+            for (let x = 0; x < imgWidth; x++) {
+                const i = (y * imgWidth + x) * 4;
+                const r = raw[i], g = raw[i + 1], b = raw[i + 2], a = raw[i + 3];
+                if (a < 20) continue;
+
+                const grey = r * 0.299 + g * 0.587 + b * 0.114;
+                const print = grey < 120              // verde → negro sólido
+                    || (grey < 210 && grey <= bayer[y % 2][x % 2]); // naranja → dithering
+
+                if (print) {
+                    raster[(y * xBytes) + Math.floor(x / 8)] |= (1 << (7 - (x % 8)));
                 }
-                parts.push(Buffer.from([b]));
             }
-            parts.push(Buffer.from([0x0A]));
         }
 
-        parts.push(Buffer.from([0x1B, 0x32]));
-        return Buffer.concat(parts);
+        return Buffer.concat([header, raster]);
     }
 
     async printFleje({ name, price, barcode, sku, printerName }) {
@@ -318,11 +324,19 @@ class PrinterService {
 
         const parts = [RESET, LINE_TIGHT];
 
+        // Logo
+        const logoPath = path.join(__dirname, '..', 'LOGO_TRANSP_BG.png');
+        try {
+            const logoBuffer = await this.renderLogoEscPos(logoPath, 200);
+            parts.push(LEFT, logoBuffer, Buffer.from([0x1B, 0x4A, 0x04]));
+        } catch (e) {
+            log.warn(`[Fleje] Logo no disponible, usando texto: ${e.message}`);
+            parts.push(LEFT, BOLD_ON, t('GETit'), FEED_SMALL, BOLD_OFF);
+        }
+
         // Fecha en esquina superior derecha
         const fecha = new Date().toLocaleDateString('es-CL');
         parts.push(RIGHT, t(`${fecha}`), FEED_SMALL);
-
-        parts.push(LEFT, BOLD_ON, t('GETit'), FEED_SMALL, BOLD_OFF);
 
         // Nombre en doble ANCHO (no altura) → gap mínimo igual que GETit→nombre
         parts.push(LEFT, BOLD_ON, SIZE_WIDE, t(name), FEED_SMALL, SIZE_NORMAL, BOLD_OFF);
