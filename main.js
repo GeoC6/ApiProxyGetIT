@@ -211,8 +211,13 @@ class APISystemTray {
             backgroundColor: '#ffffff'
         });
         const configPath = join(__dirname, 'config-panel.html');
+        let currentPort = '9000';
+        try {
+            const portFile = join(__dirname, '.current-port');
+            if (fs.existsSync(portFile)) currentPort = fs.readFileSync(portFile, 'utf8').trim();
+        } catch(e) {}
         if (fs.existsSync(configPath)) {
-            configWindow.loadFile(configPath);
+            configWindow.loadFile(configPath, { query: { port: currentPort } });
         } else {
             configWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(this.getConfigHTML())}`);
         }

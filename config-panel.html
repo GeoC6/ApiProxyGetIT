@@ -353,6 +353,23 @@
 
             <div class="info-grid" style="grid-template-columns: 1fr; gap: 1.5rem;">
 
+                <div class="info-card" style="border-left-color: #e53e3e; background: linear-gradient(135deg, #fff5f5 0%, #fed7d7 100%);">
+                    <h3 style="color: #c53030;">Puerto de esta API <span style="font-size:12px; font-weight:400; color:#718096;">(requiere reinicio)</span></h3>
+                    <div class="info-item" style="flex-direction: column; align-items: flex-start; gap: 6px;">
+                        <label for="APP_PORT" style="font-size:0.85rem; color:#555; font-weight:600;">Puerto</label>
+                        <input id="APP_PORT" type="number" placeholder="9000" min="1024" max="65535" style="width:100%; padding:8px 12px; border:1px solid #ddd; border-radius:8px; font-size:1rem; font-family:monospace;" />
+                        <span style="font-size:0.78rem; color:#888;">Por defecto: 9000. Cambia este valor si necesitas correr múltiples instancias en el mismo PC.</span>
+                    </div>
+                </div>
+
+                <div class="info-card">
+                    <h3>KDS (Cocina)</h3>
+                    <div class="info-item" style="flex-direction: column; align-items: flex-start; gap: 6px;">
+                        <label for="KDS_URL" style="font-size:0.85rem; color:#555; font-weight:600;">URL del ApiKDS</label>
+                        <input id="KDS_URL" type="text" placeholder="http://192.168.1.83:9001" style="width:100%; padding:8px 12px; border:1px solid #ddd; border-radius:8px; font-size:1rem; font-family:monospace;" />
+                    </div>
+                </div>
+
                 <div class="info-card">
                     <h3>Transbank IM30</h3>
                     <div class="info-item" style="flex-direction: column; align-items: flex-start; gap: 6px;">
@@ -397,6 +414,11 @@
                         <input id="PRINTER_TICKET_NAME" type="text" placeholder="Nombre en Windows" style="width:100%; padding:8px 12px; border:1px solid #ddd; border-radius:8px; font-size:1rem;" />
                     </div>
                     <div class="info-item" style="flex-direction: column; align-items: flex-start; gap: 6px; margin-top:12px;">
+                        <label for="FLEJE_PRINTER_NAME" style="font-size:0.85rem; color:#555; font-weight:600;">Nombre de la Impresora de Flejes</label>
+                        <input id="FLEJE_PRINTER_NAME" type="text" placeholder="POS-80" style="width:100%; padding:8px 12px; border:1px solid #ddd; border-radius:8px; font-size:1rem;" />
+                        <span style="font-size:0.78rem; color:#888;">Por defecto: POS-80. Puede ser distinta a la impresora de tickets.</span>
+                    </div>
+                    <div class="info-item" style="flex-direction: column; align-items: flex-start; gap: 6px; margin-top:12px;">
                         <label for="PRINTER_ENABLED" style="font-size:0.85rem; color:#555; font-weight:600;">Impresión habilitada</label>
                         <select id="PRINTER_ENABLED" style="width:100%; padding:8px 12px; border:1px solid #ddd; border-radius:8px; font-size:1rem;">
                             <option value="true">Sí</option>
@@ -425,8 +447,10 @@
     </div>
 
     <script>
-        const API_URL = 'http://localhost:9000';
-        const fields = ['IM30_PORT', 'TBK_URL', 'XSIGN_URL', 'ODOO_URL', 'PRINTER_TICKET_NAME', 'PRINTER_ENABLED', 'POS_PIN'];
+        const urlParams = new URLSearchParams(window.location.search);
+        let currentPort = urlParams.get('port') || localStorage.getItem('APIPROXY_PORT') || '9000';
+        let API_URL = 'http://localhost:' + currentPort;
+        const fields = ['APP_PORT', 'KDS_URL', 'IM30_PORT', 'TBK_URL', 'XSIGN_URL', 'ODOO_URL', 'PRINTER_TICKET_NAME', 'FLEJE_PRINTER_NAME', 'PRINTER_ENABLED', 'POS_PIN'];
 
         function showStatus(message, type) {
             const statusEl = document.getElementById('statusMessage');
@@ -435,16 +459,38 @@
             setTimeout(() => statusEl.classList.remove('show'), 4000);
         }
 
+        async function detectPort() {
+            const candidates = [currentPort, '9000', '9001', '9002', '9003', '9004', '9005'];
+            const unique = [...new Set(candidates)];
+            for (const port of unique) {
+                try {
+                    const res = await fetch(`http://localhost:${port}/health`, { signal: AbortSignal.timeout(1500) });
+                    if (res.ok) {
+                        currentPort = port;
+                        API_URL = 'http://localhost:' + port;
+                        localStorage.setItem('APIPROXY_PORT', port);
+                        return true;
+                    }
+                } catch(e) {}
+            }
+            return false;
+        }
+
         async function loadConfig() {
             try {
-                const res = await fetch(`${API_URL}/api/config`);
+                let res = await fetch(`${API_URL}/api/config`).catch(() => null);
+                if (!res || !res.ok) {
+                    const found = await detectPort();
+                    if (!found) throw new Error('API no encontrada en puertos 9000-9005');
+                    res = await fetch(`${API_URL}/api/config`);
+                }
                 const data = await res.json();
                 if (!data.success) throw new Error(data.error);
                 fields.forEach(key => {
                     const el = document.getElementById(key);
                     if (el && data.config[key] !== undefined) el.value = data.config[key];
                 });
-                showStatus('Configuración cargada correctamente', 'success');
+                showStatus(`Configuración cargada (puerto ${currentPort})`, 'success');
             } catch (error) {
                 showStatus('Error cargando configuración: ' + error.message, 'error');
             }
@@ -464,7 +510,18 @@
                 });
                 const data = await res.json();
                 if (!data.success) throw new Error(data.error);
-                showStatus('Configuración guardada. Los cambios aplican en la próxima transacción.', 'success');
+
+                const newPort = body['APP_PORT'] || currentPort;
+                const portChanged = newPort !== currentPort;
+                if (portChanged) {
+                    localStorage.setItem('APIPROXY_PORT', newPort);
+                    API_URL = 'http://localhost:' + newPort;
+                }
+
+                const msg = portChanged
+                    ? `Configuración guardada. Reinicia la API para aplicar el nuevo puerto (${newPort}).`
+                    : 'Configuración guardada. Los cambios aplican en la próxima transacción.';
+                showStatus(msg, 'success');
             } catch (error) {
                 showStatus('Error guardando configuración: ' + error.message, 'error');
             }

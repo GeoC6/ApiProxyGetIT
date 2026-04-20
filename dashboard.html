@@ -311,7 +311,7 @@
                         <div class="status-value" id="apiPort">9000</div>
                     </div>
                 </div>
-                <button class="btn btn-primary" onclick="openUrl('http://localhost:9000')">
+                <button id="btnOpenApi" class="btn btn-primary">
                     Abrir API en Navegador
                 </button>
             </div>
@@ -325,18 +325,15 @@
                     </div>
                 </div>
                 <div class="link-list">
-                    <a href="#" class="link-item"
-                        onclick="openUrl('http://localhost:9000/api/sync-status'); return false;">
+                    <a href="#" id="btnSyncStatus" class="link-item">
                         <span class="link-label">Estado de Sincronización</span>
                         <span class="link-arrow">→</span>
                     </a>
-                    <a href="#" class="link-item"
-                        onclick="openUrl('http://localhost:9000/api/critical-errors'); return false;">
+                    <a href="#" id="btnCriticalErrors" class="link-item">
                         <span class="link-label">Errores Críticos</span>
                         <span class="link-arrow">→</span>
                     </a>
-                    <a href="#" class="link-item"
-                        onclick="openUrl('http://localhost:9000/api/orders/stats'); return false;">
+                    <a href="#" id="btnOrderStats" class="link-item">
                         <span class="link-label">Estadísticas de Órdenes</span>
                         <span class="link-arrow">→</span>
                     </a>
@@ -351,31 +348,9 @@
                         <p>Registro de actividad</p>
                     </div>
                 </div>
-                <button class="btn btn-primary" onclick="openUrl('http://localhost:9000/realtime-logs.html')">
-                    Ver Logs en Tiempo Real
-                </button>
-                <button class="btn btn-secondary" onclick="openLogsInTxt()">
-                    Abrir Logs en TXT
-                </button>
-                <button class="btn btn-secondary" onclick="openUrl('http://localhost:9000/api/logs/history')">
-                    Ver Historial JSON
-                </button>
-            </div>
-
-            <div class="card">
-                <div class="card-header">
-                    <div class="card-icon orange">P</div>
-                    <div class="card-title">
-                        <h3>Pantallas</h3>
-                        <p>Displays de órdenes</p>
-                    </div>
-                </div>
-                <button class="btn btn-primary" onclick="openUrl('http://localhost:9000/display/employee')">
-                    Display Empleado
-                </button>
-                <button class="btn btn-secondary" onclick="openUrl('http://localhost:9000/display/customer')">
-                    Display Cliente
-                </button>
+                <button id="btnRealtimeLogs" class="btn btn-primary">Ver Logs en Tiempo Real</button>
+                <button class="btn btn-secondary" onclick="openLogsInTxt()">Abrir Logs en TXT</button>
+                <button id="btnLogsJson" class="btn btn-secondary">Ver Historial JSON</button>
             </div>
 
             <div class="card">
@@ -403,15 +378,9 @@
                         <p>Gestión de pedidos</p>
                     </div>
                 </div>
-                <button class="btn btn-primary" onclick="openUrl('http://localhost:9000/api/orders/display')">
-                    Ver Órdenes Activas
-                </button>
-                <button class="btn btn-secondary" onclick="openUrl('http://localhost:9000/api/orders/history')">
-                    Historial de Órdenes
-                </button>
-                <button class="btn btn-secondary" onclick="openUrl('http://localhost:9000/api/orders/delivered')">
-                    Órdenes Entregadas
-                </button>
+                <button id="btnActiveOrders" class="btn btn-primary">Ver Órdenes Activas</button>
+                <button id="btnOrderHistory" class="btn btn-secondary">Historial de Órdenes</button>
+                <button id="btnDeliveredOrders" class="btn btn-secondary">Órdenes Entregadas</button>
             </div>
         </div>
     </div>
@@ -421,6 +390,25 @@
         const path = require('path');
         const fs = require('fs');
         const os = require('os');
+
+        let currentPort = localStorage.getItem('APIPROXY_PORT') || '9000';
+        let API_BASE = 'http://localhost:' + currentPort;
+
+        async function detectPort() {
+            const candidates = [...new Set([currentPort, '9000', '9001', '9002', '9003', '9004', '9005'])];
+            for (const port of candidates) {
+                try {
+                    const res = await fetch(`http://localhost:${port}/health`, { signal: AbortSignal.timeout(1500) });
+                    if (res.ok) {
+                        currentPort = port;
+                        API_BASE = 'http://localhost:' + port;
+                        localStorage.setItem('APIPROXY_PORT', port);
+                        return true;
+                    }
+                } catch(e) {}
+            }
+            return false;
+        }
 
         function openUrl(url) {
             shell.openExternal(url);
@@ -434,7 +422,7 @@
             const tempDir = os.tmpdir();
             const logFile = path.join(tempDir, `api-logs-${Date.now()}.txt`);
 
-            fetch('http://localhost:9000/api/logs/history?limit=500')
+            fetch(`${API_BASE}/api/logs/history?limit=500`)
                 .then(res => res.json())
                 .then(data => {
                     let logContent = 'API AUTOSERVICIO - LOGS\n';
@@ -442,7 +430,6 @@
                     logContent += `Fecha: ${new Date().toLocaleString('es-CL')}\n`;
                     logContent += `Total: ${data.logs ? data.logs.length : 0} logs\n`;
                     logContent += '='.repeat(50) + '\n\n';
-
                     if (data.logs && data.logs.length > 0) {
                         data.logs.forEach(log => {
                             logContent += `[${log.timestamp}] [${log.level.toUpperCase()}] ${log.message}\n`;
@@ -450,28 +437,48 @@
                     } else {
                         logContent += 'No hay logs disponibles.\n';
                     }
-
                     fs.writeFileSync(logFile, logContent, 'utf8');
                     shell.openPath(logFile);
                 })
-                .catch(error => {
-                    alert('Error al cargar los logs: ' + error.message);
-                });
+                .catch(error => { alert('Error al cargar los logs: ' + error.message); });
+        }
+
+        function updateLinks() {
+            document.getElementById('btnOpenApi').onclick = () => openUrl(API_BASE);
+            document.getElementById('btnSyncStatus').onclick = () => { openUrl(`${API_BASE}/api/sync-status`); return false; };
+            document.getElementById('btnCriticalErrors').onclick = () => { openUrl(`${API_BASE}/api/critical-errors`); return false; };
+            document.getElementById('btnOrderStats').onclick = () => { openUrl(`${API_BASE}/api/orders/stats`); return false; };
+            document.getElementById('btnRealtimeLogs').onclick = () => openUrl(`${API_BASE}/realtime-logs.html`);
+            document.getElementById('btnLogsJson').onclick = () => openUrl(`${API_BASE}/api/logs/history`);
+            document.getElementById('btnActiveOrders').onclick = () => openUrl(`${API_BASE}/api/orders/display`);
+            document.getElementById('btnOrderHistory').onclick = () => openUrl(`${API_BASE}/api/orders/history`);
+            document.getElementById('btnDeliveredOrders').onclick = () => openUrl(`${API_BASE}/api/orders/delivered`);
         }
 
         async function checkAPIStatus() {
             try {
-                const response = await fetch('http://localhost:9000/health');
+                const response = await fetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(2000) });
                 if (response.ok) {
                     document.getElementById('apiStatus').textContent = 'Online';
                     document.getElementById('apiStatus').parentElement.className = 'status-item success';
+                    document.getElementById('apiPort').textContent = currentPort;
+                    return;
                 }
-            } catch (error) {
+            } catch(e) {}
+
+            const found = await detectPort();
+            if (found) {
+                document.getElementById('apiStatus').textContent = 'Online';
+                document.getElementById('apiStatus').parentElement.className = 'status-item success';
+                document.getElementById('apiPort').textContent = currentPort;
+                updateLinks();
+            } else {
                 document.getElementById('apiStatus').textContent = 'Offline';
                 document.getElementById('apiStatus').parentElement.className = 'status-item warning';
             }
         }
 
+        updateLinks();
         checkAPIStatus();
         setInterval(checkAPIStatus, 5000);
     </script>

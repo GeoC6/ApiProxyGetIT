@@ -39,7 +39,6 @@ const httpsAgent = new https.Agent({
 });
 
 const app = express();
-const PORT = process.env.PORT || 9000;
 const ODOO_URL = process.env.ODOO_URL || 'https://getit.posgo.cl';
 
 // Buffer temporal de productos por sesión (TTL 3 min, solo dura el login)
@@ -254,6 +253,7 @@ app.get('/api/config', async (req, res) => {
     try {
         const saved = await getAllSettings();
         const config = {
+            APP_PORT: saved.APP_PORT || process.env.PORT || '9000',
             IM30_PORT: saved.IM30_PORT || process.env.IM30_PORT || 'COM8',
             TBK_URL: saved.TBK_URL || process.env.TBK_URL || 'https://localhost:8001',
             XSIGN_URL: saved.XSIGN_URL || process.env.XSIGN_URL || 'http://localhost:5999',
@@ -261,6 +261,7 @@ app.get('/api/config', async (req, res) => {
             ODOO_URL: saved.ODOO_URL || process.env.ODOO_URL || 'https://getit.posgo.cl',
             PRINTER_ENABLED: saved.PRINTER_ENABLED || process.env.PRINTER_ENABLED || 'true',
             PRINTER_TICKET_NAME: saved.PRINTER_TICKET_NAME || process.env.PRINTER_TICKET_NAME || '',
+            FLEJE_PRINTER_NAME: saved.FLEJE_PRINTER_NAME || process.env.FLEJE_PRINTER_NAME || 'POS-80',
             POS_PIN: saved.POS_PIN || '',
         };
         res.json({ success: true, config });
@@ -271,7 +272,7 @@ app.get('/api/config', async (req, res) => {
 
 app.post('/api/config', async (req, res) => {
     try {
-        const allowed = ['IM30_PORT', 'TBK_URL', 'XSIGN_URL', 'KDS_URL', 'ODOO_URL', 'PRINTER_ENABLED', 'PRINTER_TICKET_NAME', 'POS_PIN'];
+        const allowed = ['APP_PORT', 'IM30_PORT', 'TBK_URL', 'XSIGN_URL', 'KDS_URL', 'ODOO_URL', 'PRINTER_ENABLED', 'PRINTER_TICKET_NAME', 'FLEJE_PRINTER_NAME', 'POS_PIN'];
         const entries = Object.entries(req.body).filter(([key]) => allowed.includes(key));
         await Promise.all(entries.map(([key, value]) => setSetting(key, String(value))));
         log.success(`Configuración actualizada: ${entries.map(([k]) => k).join(', ')}`);
@@ -306,7 +307,10 @@ app.use('*', (req, res) => {
 async function start() {
     try {
         await initDatabase();
+        const savedPort = await getSetting('APP_PORT', process.env.PORT || '9000');
+        const PORT = parseInt(savedPort, 10) || 9000;
         app.listen(PORT, () => {
+            try { fs.writeFileSync(path.join(__dirname, '.current-port'), String(PORT)); } catch(e) {}
             log.success(`API Intermedia iniciada en puerto ${PORT}`);
             log.info(`URL: http://localhost:${PORT}`);
             log.info(`ENV path: ${path.join(__dirname, '.env')}`);

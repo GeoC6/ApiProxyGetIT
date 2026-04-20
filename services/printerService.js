@@ -259,45 +259,98 @@ class PrinterService {
         }
     }
 
+    async renderLogoEscPos(imagePath, targetWidth) {
+        const { default: Jimp } = await import('jimp');
+
+        const src = await Jimp.read(imagePath);
+        src.resize(targetWidth, Jimp.AUTO);
+
+        const paddedHeight = Math.ceil(src.bitmap.height / 8) * 8;
+        const bg = new Jimp(targetWidth, paddedHeight, 0xFFFFFFFF);
+        bg.composite(src, 0, 0);
+        bg.greyscale();
+        bg.contrast(1);
+
+        const width = bg.bitmap.width;
+        const height = bg.bitmap.height;
+        const parts = [];
+
+        parts.push(Buffer.from([0x1B, 0x33, 0x08]));
+
+        for (let y = 0; y < height; y += 8) {
+            parts.push(Buffer.from([0x1B, 0x2A, 0x00, width & 0xFF, (width >> 8) & 0xFF]));
+            for (let x = 0; x < width; x++) {
+                let b = 0;
+                for (let k = 0; k < 8; k++) {
+                    const p = Jimp.intToRGBA(bg.getPixelColor(x, y + k));
+                    if (p.r * 0.299 + p.g * 0.587 + p.b * 0.114 < 128) b |= (1 << (7 - k));
+                }
+                parts.push(Buffer.from([b]));
+            }
+            parts.push(Buffer.from([0x0A]));
+        }
+
+        parts.push(Buffer.from([0x1B, 0x32]));
+        return Buffer.concat(parts);
+    }
+
     async printFleje({ name, price, barcode, sku, printerName }) {
         const printer = printerName || this.getEnvValue('FLEJE_PRINTER_NAME') || 'POS-80';
         const exePath = this.getExePath();
         const codigoBarras = barcode || sku || '';
 
-        const RESET   = `${ESC}@`;
-        const CUT     = `${GS}V\x41\x03`;
-        const SIZE_XL = `${GS}!\x22`; // 3x ancho + 3x alto
+        const RESET       = Buffer.from([0x1B, 0x40]);
+        const CUT         = Buffer.from([0x1D, 0x56, 0x41, 0x00]); // cut sin feed extra
+        const LINE_TIGHT  = Buffer.from([0x1B, 0x33, 0x16]);        // line spacing 22/180"
+        const CENTER      = Buffer.from([0x1B, 0x61, 0x01]);
+        const RIGHT       = Buffer.from([0x1B, 0x61, 0x02]);
+        const LEFT        = Buffer.from([0x1B, 0x61, 0x00]);
+        const BOLD_ON     = Buffer.from([0x1B, 0x45, 0x01]);
+        const BOLD_OFF    = Buffer.from([0x1B, 0x45, 0x00]);
+        const SIZE_NORMAL   = Buffer.from([0x1D, 0x21, 0x00]);
+        const SIZE_WIDE     = Buffer.from([0x1D, 0x21, 0x10]); // 2x width, 1x height — gap mínimo
+        const SIZE_DOUBLE   = Buffer.from([0x1D, 0x21, 0x11]);
+        const SIZE_MEDIUM   = Buffer.from([0x1D, 0x21, 0x21]); // 3x width, 2x height
 
-        let ticket = '';
-        ticket += RESET;
-        ticket += CENTER;
-        ticket += '\n';
-        ticket += BOLD_ON + SIZE_DOUBLE;
-        ticket += `${name}\n`;
-        ticket += BOLD_OFF + SIZE_NORMAL;
-        ticket += '\n';
-        ticket += BOLD_ON + SIZE_XL;
-        ticket += `$${Number(price).toLocaleString('es-CL')}\n`;
-        ticket += SIZE_NORMAL + BOLD_OFF;
-        ticket += '\n';
+        const t = (str) => Buffer.from(str, 'utf8');
 
+        const FEED_SMALL  = Buffer.from([0x1B, 0x4A, 0x08]); // ESC J 8 — avance puntual 8/180"
+
+        const parts = [RESET, LINE_TIGHT];
+
+        // Fecha en esquina superior derecha
+        const fecha = new Date().toLocaleDateString('es-CL');
+        parts.push(RIGHT, t(`${fecha}`), FEED_SMALL);
+
+        parts.push(LEFT, BOLD_ON, t('GETit'), FEED_SMALL, BOLD_OFF);
+
+        // Nombre en doble ANCHO (no altura) → gap mínimo igual que GETit→nombre
+        parts.push(LEFT, BOLD_ON, SIZE_WIDE, t(name), FEED_SMALL, SIZE_NORMAL, BOLD_OFF);
+
+        // Precio centrado (3x ancho, 2x alto)
+        const precioStr = `$ ${Number(price).toLocaleString('es-CL')}`;
+        parts.push(CENTER, BOLD_ON, SIZE_MEDIUM, t(`${precioStr}`), Buffer.from([0x1B, 0x4A, 0x28]), SIZE_NORMAL, BOLD_OFF);
+
+        // Código de barras gráfico con número debajo
         if (codigoBarras) {
-            // Barcode ESC/POS: GS k type data
-            ticket += CENTER;
-            ticket += `${GS}h\x50`;               // barcode height 80 dots
-            ticket += `${GS}w\x02`;               // barcode width module 2
-            ticket += `${GS}H\x02`;               // print HRI below barcode
-            ticket += `${GS}k\x49${String.fromCharCode(codigoBarras.length)}${codigoBarras}`; // CODE128
-            ticket += '\n';
-            ticket += SIZE_NORMAL;
+            const barcodeData = `{B${codigoBarras}`;
+            parts.push(
+                CENTER,
+                Buffer.from([0x1D, 0x68, 0x30]),                          // altura 48
+                Buffer.from([0x1D, 0x77, 0x02]),                          // ancho módulo 2
+                Buffer.from([0x1D, 0x48, 0x02]),                          // HRI debajo
+                Buffer.from([0x1D, 0x6B, 0x49, barcodeData.length]),      // CODE128
+                Buffer.from(barcodeData, 'ascii'),
+                Buffer.from([0x1B, 0x4A, 0x10])
+            );
         }
 
-        ticket += '\n\n\n';
-        ticket += CUT;
+        parts.push(CUT);
 
+        const ticket = Buffer.concat(parts);
         await this.ensureTempDir();
         const filepath = path.join(this.tempDir, `fleje_${Date.now()}.bin`);
-        await fs.writeFile(filepath, Buffer.from(ticket, 'binary'));
+        await fs.writeFile(filepath, ticket);
         log.info(`[Fleje] Imprimiendo "${name}" en "${printer}"`);
 
         const cmd = `"${exePath}" "${printer}" "${filepath}"`;

@@ -20,7 +20,9 @@
             "output": "dist"
         },
         "asarUnpack": [
-            "PrinterHelper.exe"
+            "PrinterHelper.exe",
+            "LOGO_TRANSP_BG.png",
+            "getit_chile_logo.jpeg"
         ],
         "files": [
             "main.js",
@@ -36,6 +38,8 @@
             "log-viewer.html",
             "realtime-logs.html",
             "PrinterHelper.exe",
+            "LOGO_TRANSP_BG.png",
+            "getit_chile_logo.jpeg",
             "icono.ico",
             "restart_api.bat",
             "node_modules/**/*"
@@ -72,6 +76,7 @@
         "cors": "^2.8.5",
         "dotenv": "^17.2.3",
         "express": "^4.19.2",
+        "jimp": "^0.22.12",
         "sqlite3": "^5.1.6"
     },
     "devDependencies": {
