@@ -305,7 +305,6 @@ class PrinterService {
         const exePath = this.getExePath();
         const codigoBarras = barcode || sku || '';
 
-        const RESET       = Buffer.from([0x1B, 0x40]);
         const CUT         = Buffer.from([0x1D, 0x56, 0x41, 0x00]); // cut sin feed extra
         const LINE_TIGHT  = Buffer.from([0x1B, 0x33, 0x16]);        // line spacing 22/180"
         const CENTER      = Buffer.from([0x1B, 0x61, 0x01]);
@@ -314,15 +313,39 @@ class PrinterService {
         const BOLD_ON     = Buffer.from([0x1B, 0x45, 0x01]);
         const BOLD_OFF    = Buffer.from([0x1B, 0x45, 0x00]);
         const SIZE_NORMAL   = Buffer.from([0x1D, 0x21, 0x00]);
-        const SIZE_WIDE     = Buffer.from([0x1D, 0x21, 0x10]); // 2x width, 1x height — gap mínimo
+        const SIZE_WIDE     = Buffer.from([0x1D, 0x21, 0x10]); // 2x width, 1x height
         const SIZE_DOUBLE   = Buffer.from([0x1D, 0x21, 0x11]);
         const SIZE_MEDIUM   = Buffer.from([0x1D, 0x21, 0x21]); // 3x width, 2x height
 
-        const t = (str) => Buffer.from(str, 'utf8');
+        const isUpperLetter = (c) => c >= 'A' && c <= 'Z';
+        const t = (str) => {
+            const chars = [...String(str)];
+            const bytes = [];
+            for (let i = 0; i < chars.length; i++) {
+                const ch = chars[i];
+                if (ch.charCodeAt(0) < 128) {
+                    bytes.push(ch.charCodeAt(0));
+                } else {
+                    const base = ch.normalize('NFD').replace(/[̀-ͯ]/g, '');
+                    for (const b of base) {
+                        if (b.charCodeAt(0) >= 128) { bytes.push(0x3F); continue; }
+                        let code = b.charCodeAt(0);
+                        // Si la base quedó minúscula, verificar contexto para uppercasear
+                        if (code >= 97 && code <= 122) {
+                            const prevUp = i > 0 && isUpperLetter(chars[i - 1]);
+                            const nextUp = i < chars.length - 1 && isUpperLetter(chars[i + 1]);
+                            if (prevUp || nextUp) code -= 32;
+                        }
+                        bytes.push(code);
+                    }
+                }
+            }
+            return Buffer.from(bytes);
+        };
 
         const FEED_SMALL  = Buffer.from([0x1B, 0x4A, 0x08]); // ESC J 8 — avance puntual 8/180"
 
-        const parts = [RESET, LINE_TIGHT];
+        const parts = [LINE_TIGHT];
 
         // Logo
         const logoPath = path.join(__dirname, '..', 'LOGO_TRANSP_BG.png');

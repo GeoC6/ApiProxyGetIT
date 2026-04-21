@@ -384,6 +384,40 @@ router.post('/cash-operation', async (req, res) => {
     }
 });
 
+router.post('/save-z-report', async (req, res) => {
+    try {
+        log.info('Proxy: /api/pos/save-z-report → Odoo');
+        const response = await axios.post(`${ODOO_URL}/pos_save_z_report`, req.body, {
+            timeout: 30000,
+            headers: { 'Content-Type': 'application/json' }
+        });
+        res.json(response.data);
+    } catch (error) {
+        const simpleError = getSimpleErrorMessage(error);
+        log.error('Error en proxy save-z-report:', simpleError);
+        res.status(500).json({ success: false, error: simpleError });
+    }
+});
+
+router.post('/start-closing', async (req, res) => {
+    try {
+        log.info('Proxy: /api/pos/start-closing → Odoo');
+        const params = new URLSearchParams();
+        params.append('session_id', (req.body.session_id || '').toString());
+        params.append('pin', (req.body.pin || '').toString());
+
+        const response = await axios.post(`${ODOO_URL}/pos_start_closing`, params, {
+            timeout: 20000,
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+        });
+        res.json(response.data);
+    } catch (error) {
+        const simpleError = getSimpleErrorMessage(error);
+        log.error('Error en proxy start-closing:', simpleError);
+        res.status(500).json({ success: false, error: simpleError });
+    }
+});
+
 router.post('/denominations', async (req, res) => {
     try {
         const response = await axios.post(`${ODOO_URL}/api/pos/denominations`, req.body, {

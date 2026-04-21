@@ -182,6 +182,27 @@ app.post('/pos_close_session', async (req, res) => {
     }
 });
 
+app.post('/api/pos/payment_totals', async (req, res) => {
+    try {
+        const { session_id } = req.body;
+        if (!session_id) return res.status(400).json({ error: 'session_id requerido' });
+
+        const formData = new URLSearchParams();
+        formData.append('session_id', session_id.toString());
+
+        const response = await axios.post(`${ODOO_URL}/pos_payment_totals`, formData, {
+            timeout: 15000,
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            httpsAgent: httpsAgent
+        });
+
+        res.json(response.data);
+    } catch (error) {
+        log.error('Error en /api/pos/payment_totals:', error.message);
+        res.json({ result: [] });
+    }
+});
+
 app.get('/', (req, res) => {
     res.json({
         name: 'API Intermedia Autoservicio',
