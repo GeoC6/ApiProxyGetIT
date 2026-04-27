@@ -50,7 +50,9 @@ async function sendToKDS(orderData, orderNumber, transactionId, source = 'autose
                 name: p.name,
                 cant: p.cant,
                 notes: p.customization || '',
-                attribute_lines: p.attribute_lines || []
+                attribute_lines: p.attribute_lines || [],
+                category_id: p.pos_categ_id || p.category_id || null,
+                category_name: p.pos_categ_name || p.category_name || ''
             })) || [],
             discounts: orderData.sale_data?.discounts || [],
             source: source,
