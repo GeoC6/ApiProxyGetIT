@@ -348,7 +348,7 @@ class PrinterService {
         const parts = [LINE_TIGHT];
 
         // Logo
-        const logoPath = path.join(__dirname, '..', 'LOGO_TRANSP_BG.png');
+        const logoPath = path.join(__dirname, '..', 'LOGO_TRANSP_BG.png').replace('app.asar', 'app.asar.unpacked');
         try {
             const logoBuffer = await this.renderLogoEscPos(logoPath, 200);
             parts.push(LEFT, logoBuffer, Buffer.from([0x1B, 0x4A, 0x04]));
