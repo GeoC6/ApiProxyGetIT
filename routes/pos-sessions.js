@@ -195,6 +195,15 @@ router.post('/sessions/close', async (req, res) => {
             });
         }
 
+        const localPin = await getSetting('POS_PIN', null);
+        if (localPin) {
+            if (pin.toString() !== localPin.trim()) {
+                log.error('PIN incorrecto en cierre de sesión (validación local)');
+                return res.status(401).json({ success: false, error: 'PIN incorrecto' });
+            }
+            log.info('PIN local verificado correctamente en cierre');
+        }
+
         const params = new URLSearchParams();
         params.append('session_id', session_id.toString());
         params.append('pin', pin.toString());

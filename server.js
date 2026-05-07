@@ -137,6 +137,18 @@ app.post('/pos_validate_session', async (req, res) => {
     }
 });
 
+app.get('/api/pos/balanza-rules', async (req, res) => {
+    try {
+        const response = await axios.get(`${ODOO_URL}/pos_balanza_rules`, {
+            timeout: 5000,
+            httpsAgent: httpsAgent
+        });
+        res.json(response.data);
+    } catch (error) {
+        res.json({ success: true, rules: [] });
+    }
+});
+
 app.get('/api/pos/session-products', (req, res) => {
     const sessionId = String(req.query.session_id || '');
     const entry = PRODUCTS_BUFFER.get(sessionId);
