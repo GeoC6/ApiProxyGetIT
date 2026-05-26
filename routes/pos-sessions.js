@@ -379,17 +379,21 @@ router.post('/discount-history', async (req, res) => {
 router.post('/cash-operation', async (req, res) => {
     try {
         log.info('Proxy: /api/pos/cash-operation → Odoo');
-        
-        const response = await axios.post(`${ODOO_URL}/api/pos/cash_operation`, req.body, {
+
+        const response = await axios.post(`${ODOO_URL}/pos_cash_out_custom`, req.body, {
             timeout: 15000,
             headers: { 'Content-Type': 'application/json' }
         });
 
-        res.json(response.data);
+        log.info('cash-operation respuesta Odoo:', JSON.stringify(response.data).slice(0, 200));
+        let data = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
+        // Si Odoo devuelve formato JSON-RPC, extraer el result
+        if (data && data.jsonrpc && data.result !== undefined) data = data.result;
+        res.json(data);
     } catch (error) {
         const simpleError = getSimpleErrorMessage(error);
         log.error('Error en proxy cash-operation:', simpleError);
-        res.status(500).json({ error: simpleError });
+        res.status(500).json({ success: false, error: simpleError });
     }
 });
 
@@ -442,6 +446,29 @@ router.post('/denominations', async (req, res) => {
 router.post('/verify_supervisor_pin', async (req, res) => {
     try {
         const response = await axios.post(`${ODOO_URL}/api/pos/verify_supervisor_pin`, req.body, {
+            timeout: 10000,
+            headers: { 'Content-Type': 'application/json' }
+        });
+        res.json(response.data);
+    } catch (error) {
+        res.status(500).json({ success: false, error: getSimpleErrorMessage(error) });
+    }
+});
+
+router.get('/check-supervisor-pin', async (req, res) => {
+    try {
+        const response = await axios.get(`${ODOO_URL}/api/pos/check-supervisor-pin`, {
+            timeout: 10000
+        });
+        res.json(response.data);
+    } catch (error) {
+        res.status(500).json({ success: false, error: getSimpleErrorMessage(error) });
+    }
+});
+
+router.post('/check-supervisor-pin', async (req, res) => {
+    try {
+        const response = await axios.post(`${ODOO_URL}/api/pos/check-supervisor-pin`, req.body, {
             timeout: 10000,
             headers: { 'Content-Type': 'application/json' }
         });

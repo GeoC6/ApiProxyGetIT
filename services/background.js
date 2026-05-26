@@ -298,7 +298,7 @@ async function sendToOdoo(transactionData, dteResponse, isInternalVoucher = fals
                 const productData = {
                     product_id: parseInt(product.id),
                     name: product.name,
-                    qty: parseInt(product.cant),
+                    qty: parseFloat(product.cant),
                     price_unit: parseFloat(product.price),
                     price_subtotal: parseFloat(product.price * product.cant),
                     price_subtotal_incl: parseFloat((product.price * product.cant) * 1.19),
@@ -340,7 +340,7 @@ async function sendToOdoo(transactionData, dteResponse, isInternalVoucher = fals
 
             affectedLines.forEach((line, idx) => {
                 const isLast = idx === affectedLines.length - 1;
-                const priceLine = parseFloat(line.price_unit) * parseInt(line.qty);
+                const priceLine = parseFloat(line.price_unit) * parseFloat(line.qty);
                 const discountPct = subtotalAffected ? (priceLine * 100) / subtotalAffected : 0;
                 const discountAmt = isLast
                     ? (discount.discount_amount - totalApplied)

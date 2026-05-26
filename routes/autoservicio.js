@@ -225,12 +225,13 @@ function buildDTEData(transactionData, tipoDTE = 39, invoiceCustomer = null, tot
                     descripcion = "Producto personalizado";
                 }
 
+                const qtyRounded = Math.round(product.cant * 1000000) / 1000000;
                 const detalleLine = {
                     NroLinDet: lineNumber++,
                     CdgItem: [{ TpoCodigo: "INT1", VlrCodigo: product.id.toString() }],
                     NmbItem: productName,
                     DscItem: descripcion,
-                    QtyItem: product.cant,
+                    QtyItem: qtyRounded,
                     PrcItem: Math.round(product.price),
                     MontoItem: Math.round(product.price * product.cant)
                 };
@@ -861,7 +862,7 @@ function adaptAutoservicioToInternal(frontendData) {
                 id: parseInt(product.product_id),
                 name: product.name || product.product_name || `Producto ID: ${product.product_id}`,
                 price: parseFloat(product.price_subtotal / product.qty),
-                cant: parseInt(product.qty),
+                cant: parseFloat(product.qty),
                 customization: product.customization || '',
                 selected_attributes: product.selected_attributes || null,
                 is_exempt: product.is_exempt || false
