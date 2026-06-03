@@ -303,7 +303,8 @@ async function sendToOdoo(transactionData, dteResponse, isInternalVoucher = fals
                     price_subtotal: parseFloat(product.price * product.cant),
                     price_subtotal_incl: parseFloat((product.price * product.cant) * 1.19),
                     discount: 0,
-                    customer_note: ''
+                    customer_note: '',
+                    tipo_venta: 'regular'
                 };
 
                 if (product.customization) {
@@ -362,6 +363,10 @@ async function sendToOdoo(transactionData, dteResponse, isInternalVoucher = fals
                 line.customer_note = line.customer_note
                     ? `${line.customer_note}, ${discount.promotion_name}`
                     : discount.promotion_name;
+
+                if (discount.tipo_venta) {
+                    line.tipo_venta = discount.tipo_venta;
+                }
             });
         });
 
