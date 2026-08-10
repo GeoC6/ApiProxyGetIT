@@ -41,9 +41,34 @@ const httpsAgent = new https.Agent({
 const app = express();
 const ODOO_URL = process.env.ODOO_URL || 'https://getit.posgo.cl';
 
-// Buffer temporal de productos por sesión (TTL 3 min, solo dura el login)
+// Buffer temporal de productos por sesión (TTL 10 min)
 const PRODUCTS_BUFFER = new Map();
-const PRODUCTS_BUFFER_TTL = 3 * 60 * 1000;
+const PRODUCTS_BUFFER_TTL = 10 * 60 * 1000;
+
+// Caché completa de sesión por PIN (TTL 2 horas)
+const SESSION_FULL_CACHE = new Map();
+const SESSION_FULL_CACHE_TTL = 2 * 60 * 60 * 1000;
+
+// Jobs de carga asíncrona de sesión
+const SESSION_LOADING_JOBS = new Map();
+const JOB_TTL = 15 * 60 * 1000; // 15 min
+
+const refreshSessionInBackground = (pin, body) => {
+    axios.post(`${ODOO_URL}/pos_validate_session`, body, {
+        timeout: 120000,
+        headers: { 'Content-Type': 'application/json' },
+        httpsAgent
+    }).then(response => {
+        const fullData = response.data;
+        if (fullData?.authenticated) {
+            const { products = [], categories = [], multi_barcodes = {}, pos_categories = [], ...sessionOnly } = fullData;
+            SESSION_FULL_CACHE.set(pin, { products, categories, multi_barcodes, pos_categories, sessionOnly, ts: Date.now() });
+            log.info(`[session-cache] Refresh completado: sesión ${sessionOnly.session_id} (${products.length} productos)`);
+        }
+    }).catch(err => {
+        log.warn('[session-cache] Background refresh falló:', err.message);
+    });
+};
 
 app.use(compression());
 app.use(cors());
@@ -85,52 +110,63 @@ app.post('/pos_validate_session', async (req, res) => {
         const pinIngresado = (req.body.pin || '').toString().trim();
         log.info(`Proxy: /pos_validate_session → PIN recibido: ${'*'.repeat(pinIngresado.length)}`);
 
+        // 1. Validación PIN local (instantánea)
         const localPin = await getSetting('POS_PIN', null);
-        log.info(`PIN local configurado: ${localPin ? '*'.repeat(localPin.trim().length) : '(sin restricción)'}`);
-
         if (localPin && localPin.trim() !== '') {
             if (pinIngresado !== localPin.trim()) {
                 log.error('PIN rechazado por validación local');
-                return res.status(401).json({ error: 'PIN incorrecto' });
+                return res.status(401).json({ authenticated: false, error: 'PIN incorrecto' });
             }
             log.info('PIN local verificado correctamente');
         }
 
-        const response = await axios.post(`${ODOO_URL}/pos_validate_session`, req.body, {
-            timeout: 60000,
-            headers: { 'Content-Type': 'application/json' },
-            httpsAgent: httpsAgent
+        // 2. Generar job ID para esta carga
+        const jobId = `job_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        SESSION_LOADING_JOBS.set(jobId, { status: 'loading', ts: Date.now() });
+
+        // 3. Disparar llamada a Odoo en BACKGROUND (sin await)
+        setImmediate(() => {
+            axios.post(`${ODOO_URL}/pos_validate_session`, req.body, {
+                timeout: 120000,
+                headers: { 'Content-Type': 'application/json' },
+                httpsAgent
+            }).then(response => {
+                const fullData = response.data;
+                if (fullData?.authenticated) {
+                    const { products = [], categories = [], multi_barcodes = {}, pos_categories = [], ...sessionOnly } = fullData;
+                    const sessionId = String(sessionOnly.session_id || sessionOnly.pos_session_id || '');
+                    PRODUCTS_BUFFER.set(sessionId, { products, categories, multi_barcodes, pos_categories, ts: Date.now() });
+                    SESSION_FULL_CACHE.set(pinIngresado, { products, categories, multi_barcodes, pos_categories, sessionOnly, ts: Date.now() });
+                    SESSION_LOADING_JOBS.set(jobId, { status: 'ready', sessionData: { ...sessionOnly, products_ready: true }, sessionId, ts: Date.now() });
+                    log.info(`[job ${jobId}] Sesión lista: ${sessionId} (${products.length} productos)`);
+                } else {
+                    SESSION_LOADING_JOBS.set(jobId, { status: 'error', error: fullData?.error || 'Autenticación fallida', ts: Date.now() });
+                    log.warn(`[job ${jobId}] Autenticación fallida en Odoo`);
+                }
+                // Limpiar jobs viejos
+                for (const [k, v] of SESSION_LOADING_JOBS.entries()) {
+                    if (Date.now() - v.ts > JOB_TTL) SESSION_LOADING_JOBS.delete(k);
+                }
+            }).catch(err => {
+                SESSION_LOADING_JOBS.set(jobId, { status: 'error', error: err.message, ts: Date.now() });
+                log.error(`[job ${jobId}] Error en carga de sesión:`, err.message);
+            });
         });
 
-        const fullData = response.data;
-
-        // Si vino autenticado, separar productos del resto
-        if (fullData && fullData.authenticated) {
-            const sessionId = fullData.session_id || fullData.pos_session_id;
-            const products = fullData.products || [];
-            const categories = fullData.categories || [];
-            const multi_barcodes = fullData.multi_barcodes || {};
-
-            // Guardar en buffer temporal, el frontend los pedirá en segundo paso
-            PRODUCTS_BUFFER.set(String(sessionId), {
-                products,
-                categories,
-                multi_barcodes,
-                ts: Date.now()
-            });
-
-            // Limpiar buffer expirados
-            for (const [k, v] of PRODUCTS_BUFFER.entries()) {
-                if (Date.now() - v.ts > PRODUCTS_BUFFER_TTL) PRODUCTS_BUFFER.delete(k);
-            }
-
-            // Devolver sin el peso grande
-            const { products: _p, categories: _c, multi_barcodes: _m, ...sessionOnly } = fullData;
-            log.info(`pos_validate_session: sesión ${sessionId} autenticada, productos separados (${products.length})`);
-            return res.json({ ...sessionOnly, products_ready: true });
+        // 4. Si hay caché válida → responder inmediatamente con datos completos
+        const cached = SESSION_FULL_CACHE.get(pinIngresado);
+        if (cached && Date.now() - cached.ts < SESSION_FULL_CACHE_TTL) {
+            const { products, categories, multi_barcodes, pos_categories, sessionOnly } = cached;
+            const sessionId = String(sessionOnly.session_id || sessionOnly.pos_session_id || '');
+            PRODUCTS_BUFFER.set(sessionId, { products, categories, multi_barcodes, pos_categories, ts: Date.now() });
+            log.info(`[job ${jobId}] Sesión ${sessionId} devuelta desde caché (${products.length} productos) — Odoo actualizando en background`);
+            return res.json({ ...sessionOnly, authenticated: true, products_ready: true, job_id: jobId });
         }
 
-        res.json(fullData);
+        // 5. Sin caché → responder inmediatamente con estado de carga
+        log.info(`[job ${jobId}] Sin caché — respondiendo inmediatamente, productos cargando en background`);
+        return res.json({ authenticated: true, session_loading: true, job_id: jobId });
+
     } catch (error) {
         log.error('Error en proxy /pos_validate_session:', error.message);
         res.status(500).json({ success: false, error: error.message });
@@ -155,9 +191,21 @@ app.get('/api/pos/session-products', (req, res) => {
     if (!entry) {
         return res.status(404).json({ success: false, error: 'Productos no disponibles, vuelve a iniciar sesión' });
     }
-    PRODUCTS_BUFFER.delete(sessionId);
     log.info(`session-products: entregando ${entry.products.length} productos para sesión ${sessionId}`);
-    res.json({ success: true, products: entry.products, categories: entry.categories, multi_barcodes: entry.multi_barcodes });
+    res.json({
+        success: true,
+        products: entry.products,
+        categories: entry.categories,
+        multi_barcodes: entry.multi_barcodes,
+        pos_categories: entry.pos_categories || []
+    });
+});
+
+app.get('/api/pos/session-loading-status', (req, res) => {
+    const jobId = req.query.job_id || '';
+    const job = SESSION_LOADING_JOBS.get(jobId);
+    if (!job) return res.status(404).json({ status: 'not_found' });
+    res.json(job);
 });
 
 app.post('/check_session_exists', async (req, res) => {

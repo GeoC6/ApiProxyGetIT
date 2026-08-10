@@ -478,6 +478,21 @@ router.post('/check-supervisor-pin', async (req, res) => {
     }
 });
 
+router.get('/cash-drawer-password', async (req, res) => {
+    try {
+        const { company_id } = req.query;
+        const url = company_id
+            ? `${ODOO_URL}/pos/cash_drawer_password?company_id=${company_id}`
+            : `${ODOO_URL}/pos/cash_drawer_password`;
+        const response = await axios.get(url, { timeout: 10000 });
+        const pwd = response.data?.password;
+        if (!pwd) return res.status(404).json({ success: false, error: 'Sin contraseña configurada' });
+        res.json({ success: true, password: pwd });
+    } catch (error) {
+        res.status(500).json({ success: false, error: getSimpleErrorMessage(error) });
+    }
+});
+
 router.post('/verify_float_override', async (req, res) => {
     try {
         log.info('Proxy: /api/pos/verify_float_override → Odoo');

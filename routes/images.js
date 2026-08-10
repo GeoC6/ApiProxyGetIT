@@ -1,36 +1,61 @@
 import express from 'express';
 import axios from 'axios';
+import https from 'https';
 import { db } from '../database.js';
 
 const router = express.Router();
 const ODOO_URL = process.env.ODOO_URL || 'https://getit.posgo.cl';
 
+const httpsAgent = new https.Agent({ keepAlive: true, rejectUnauthorized: true });
+
+const saveToCache = (productId, imageData, mimeType) => new Promise((resolve) => {
+    db.run(
+        'INSERT OR REPLACE INTO cached_images (product_id, image_data, mime_type) VALUES (?, ?, ?)',
+        [productId, imageData, mimeType || 'image/jpeg'],
+        (err) => { if (err) console.error(`Error guardando imagen ${productId} en cache:`, err.message); resolve(); }
+    );
+});
+
 router.get('/products/:productId', async (req, res) => {
     const { productId } = req.params;
 
     try {
+        // 1. Buscar en SQLite
         const cached = await new Promise((resolve, reject) => {
             db.get('SELECT image_data, mime_type FROM cached_images WHERE product_id = ?',
-                [productId], (err, row) => {
-                    if (err) reject(err);
-                    else resolve(row);
-                });
+                [productId], (err, row) => { if (err) reject(err); else resolve(row); });
         });
 
         if (cached) {
-            console.log(`Imagen ${productId} servida desde cache SQLite`);
             const buffer = Buffer.from(cached.image_data, 'base64');
             res.set('Content-Type', cached.mime_type);
             res.set('Cache-Control', 'public, max-age=86400');
             return res.send(buffer);
         }
 
-        // imagen no en cache — silencioso
-        res.status(404).json({ error: 'Imagen no disponible en cache' });
+        // 2. No está en caché → buscar en Odoo y cachear
+        const odooUrl = `${ODOO_URL}/web/image/product.product/${productId}/image_1920`;
+        const response = await axios.get(odooUrl, {
+            responseType: 'arraybuffer',
+            timeout: 10000,
+            httpsAgent
+        });
+
+        const mimeType = response.headers['content-type'] || 'image/jpeg';
+        const imageData = Buffer.from(response.data).toString('base64');
+
+        // Guardar en SQLite en background (no bloquear la respuesta)
+        saveToCache(productId, imageData, mimeType);
+
+        res.set('Content-Type', mimeType);
+        res.set('Cache-Control', 'public, max-age=86400');
+        res.send(Buffer.from(response.data));
 
     } catch (error) {
-        console.error(`Error sirviendo imagen ${productId}:`, error.message);
-        res.status(500).json({ error: 'Error del servidor' });
+        // Odoo no tiene imagen para este producto — responder transparente 1x1
+        res.set('Content-Type', 'image/gif');
+        res.set('Cache-Control', 'public, max-age=3600');
+        res.send(Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64'));
     }
 });
 
