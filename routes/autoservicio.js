@@ -336,6 +336,65 @@ async function generateDTE(transactionData, tipoDTE = 39, invoiceCustomer = null
     }
 }
 
+// Extrae el folio de la respuesta del servicio web de DTE (ad.xdte.cl vía Odoo).
+// Confirmado contra xsolution_base/models/account_move.py (método enviar()),
+// que ya usa esta misma API en producción: data.get('folio'), data.get('xml'),
+// data.get('fecha'), data.get('total') — respuesta plana, folio en minúscula.
+// Se dejan variantes alternativas solo como respaldo defensivo.
+function extractWebFolio(result) {
+    if (!result || typeof result !== 'object') return null;
+    const candidates = [
+        result.folio,
+        result.Folio,
+        result.numero_folio,
+        result.data?.folio,
+        result.documento?.folio,
+        result.dte?.folio,
+        result.Documento?.Folio
+    ];
+    const found = candidates.find(v => v !== undefined && v !== null);
+    return found !== undefined ? found : null;
+}
+
+// Genera un DTE (Factura 33 o NC 61) a través del servicio web (ad.xdte.cl),
+// llamando a Odoo (pos_generate_web_dte) en vez de a XSign local. Odoo es quien
+// guarda el hash_dte de la compañía, por eso el ApiProxy no llama directo al
+// servicio web.
+async function generateDTEWeb(transactionData, tipoDTE, invoiceCustomer, totalExempt, sessionId) {
+    log.info(`Generando DTE WEB tipo ${tipoDTE} (sesión ${sessionId})...`);
+
+    const dteData = buildDTEData(transactionData, tipoDTE, invoiceCustomer, totalExempt);
+
+    const response = await axios.post(`${ODOO_URL}/pos_generate_web_dte`, {
+        session_id: sessionId,
+        dte_data: dteData
+    }, {
+        timeout: 30000,
+        headers: { 'Content-Type': 'application/json' },
+        httpsAgent: httpsAgent
+    });
+
+    if (response.data?.error) {
+        throw new Error(response.data.error);
+    }
+
+    const result = response.data?.result || {};
+    log.info(`Respuesta cruda del servicio web DTE: ${JSON.stringify(result)}`);
+
+    const folio = extractWebFolio(result);
+    if (!folio) {
+        throw new Error('El servicio web de DTE no devolvió un folio reconocible. Revisa el log de la respuesta cruda.');
+    }
+
+    log.success(`DTE WEB tipo ${tipoDTE} generado - Folio: ${folio}`);
+
+    return {
+        ...result,
+        folio,
+        originalDTE: dteData
+    };
+}
+
 router.post('/create-order', async (req, res) => {
     try {
         log.info('Nueva orden de autoservicio recibida');
@@ -388,7 +447,9 @@ router.post('/create-order', async (req, res) => {
             log.info('═══════════════════════════════════════════════════════════');
         } else {
             try {
-                dteResponse = await generateDTE(adaptedData, tipoDTE, invoiceCustomer, totalExempt);
+                dteResponse = tipoDTE === 33
+                    ? await generateDTEWeb(adaptedData, tipoDTE, invoiceCustomer, totalExempt, sessionId)
+                    : await generateDTE(adaptedData, tipoDTE, invoiceCustomer, totalExempt);
                 log.info(` DTE tipo ${tipoDTE} generado con folio: ${dteResponse.folio}`);
             } catch (dteError) {
                 log.error(' Error generando DTE:', dteError.message);
@@ -736,23 +797,34 @@ router.post('/create-refund', async (req, res) => {
             session_id: sessionId
         };
 
-        let baseUrl = await getXSignUrl();
-        const xsignBase = baseUrl.replace(/\/sign\/\d+.*$/, '');
-        const finalUrl = `${xsignBase}/sign/61?getTED=false&sendDTE=true`;
+        log.info(`Generando NC WEB — folio original: ${original_folio}, tipo: ${original_tipo_dte}, total: ${totalAmount}`);
 
-        log.info(`Generando NC — folio original: ${original_folio}, tipo: ${original_tipo_dte}, total: ${totalAmount}`);
+        let folioNC;
+        try {
+            const response = await axios.post(`${ODOO_URL}/pos_generate_web_dte`, {
+                session_id: sessionId,
+                dte_data: dteData
+            }, {
+                timeout: 30000,
+                headers: { 'Content-Type': 'application/json' },
+                httpsAgent: httpsAgent
+            });
 
-        const response = await axios.post(finalUrl, dteData, {
-            timeout: 30000,
-            headers: { 'Content-Type': 'application/json' },
-            httpsAgent: httpsAgent
-        });
+            if (response.data?.error) {
+                throw new Error(response.data.error);
+            }
 
-        if (response.status !== 200) {
-            throw new Error(`XSign respondió ${response.status} al generar NC`);
+            const result = response.data?.result || {};
+            log.info(`Respuesta cruda del servicio web DTE (NC): ${JSON.stringify(result)}`);
+
+            folioNC = extractWebFolio(result);
+            if (!folioNC) {
+                throw new Error('El servicio web de DTE no devolvió un folio reconocible para la NC.');
+            }
+        } catch (webError) {
+            throw new Error(`No se pudo generar la NC web: ${webError.message}`);
         }
 
-        const folioNC = response.data.folio;
         log.success(`NC generada con folio: ${folioNC}`);
 
         // Registrar NC en Odoo de forma asíncrona (no bloqueante)
@@ -787,7 +859,7 @@ router.post('/create-refund', async (req, res) => {
 });
 
 function adaptAutoservicioToInternal(frontendData) {
-    const { session_id, orders, company_data, discounts = [] } = frontendData;
+    const { session_id, config_id, orders, company_data, discounts = [] } = frontendData;
 
     console.log('╔═══════════════════════════════════════════════════════════╗');
     console.log('║      COMPANY_DATA RECIBIDO EN LA API                    ║');
@@ -811,6 +883,7 @@ function adaptAutoservicioToInternal(frontendData) {
 
     const session_data = {
         session_id: parseInt(session_id),
+        config_id: config_id ? parseInt(config_id) : null,
         company_data: company_data || {
             name: 'AUTOSERVICIO',
             vat: '77283971-5',

@@ -1,6 +1,6 @@
 {
     "name": "api-autoservicio-intermedia",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "description": "API intermedia para autoservicio yogurt - offline first con system tray y auto-start automático",
     "main": "main.js",
     "type": "module",
@@ -15,7 +15,7 @@
     },
     "build": {
         "appId": "com.autoservicio.api",
-        "productName": "API Autoservicio",
+        "productName": "Api autoservicio GetIT",
         "directories": {
             "output": "dist"
         },
@@ -62,7 +62,7 @@
             "uninstallerIcon": "icono.ico",
             "createDesktopShortcut": "always",
             "createStartMenuShortcut": true,
-            "shortcutName": "API Autoservicio",
+            "shortcutName": "Api autoservicio GetIT",
             "runAfterFinish": true,
             "deleteAppDataOnUninstall": false,
             "perMachine": false,
