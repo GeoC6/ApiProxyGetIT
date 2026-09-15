@@ -140,7 +140,7 @@ function buildDTEData(transactionData) {
             Propina: parseFloat(sale_data.tip_amount || 0),
             CdgVendedor: "autoservicio",
             AjusteSencillo: 0,
-            Vuelto: 0,
+            Vuelto: Math.round(sale_data.change_amount || 0),
             Pagos: [{
                 desc: tbk_data.card_type === "DB" ? "DEBITO" : "CREDITO",
                 monto: Math.round(tbk_data.amount)
@@ -315,7 +315,8 @@ async function sendToOdoo(transactionData, dteResponse, isInternalVoucher = fals
             dte_json: dteResponse ? JSON.stringify(dteResponse.originalDTE) : null,
             tipo_dte: isInternalVoucher ? '00' : (dteResponse?.originalDTE?.Encabezado?.IdDoc?.TipoDTE || sale_data.tipo_dte),
             is_internal_voucher: isInternalVoucher,
-            internal_voucher_number: isInternalVoucher ? voucherNumber : ''
+            internal_voucher_number: isInternalVoucher ? voucherNumber : '',
+            vuelto: isInternalVoucher ? 0 : parseFloat(sale_data.change_amount || 0)
         }]
     };
 

@@ -14,7 +14,7 @@ import express from 'express';
 import cors from 'cors';
 import fs from 'fs';
 import axios from 'axios';
-import { initDatabase, db, getSetting, setSetting, getAllSettings } from './database.js';
+import { initDatabase, db, getSetting, setSetting, getAllSettings, saveSessionFullCache, loadSessionFullCache } from './database.js';
 import { log } from './services/logger.js';
 import autoservicioRouter from './routes/autoservicio.js';
 import proxyRouter from './routes/proxy.js';
@@ -46,9 +46,24 @@ const ODOO_URL = process.env.ODOO_URL || 'https://getit.posgo.cl';
 const PRODUCTS_BUFFER = new Map();
 const PRODUCTS_BUFFER_TTL = 10 * 60 * 1000;
 
+// Recarga de catálogo en segundo plano (por config_id): estado + catálogo listo.
+const CATALOG_READY = new Map();
+const CATALOG_READY_TTL = 30 * 60 * 1000;
+
 // Caché completa de sesión por PIN (sin TTL fijo — se invalida por versión)
 const SESSION_FULL_CACHE = new Map();
-const SESSION_FULL_CACHE_TTL = 24 * 60 * 60 * 1000; // 24h como tope máximo de seguridad
+// Ampliado para resiliencia offline: tras un corte de luz el cache (ahora persistente
+// en disco) debe seguir sirviendo aunque pasen horas/días; la frescura la controla el
+// hash de versión cuando vuelve internet.
+const SESSION_FULL_CACHE_TTL = 7 * 24 * 60 * 60 * 1000; // 7 días
+
+// Setea el cache en memoria Y lo persiste en disco (write-through) — así sobrevive a
+// reinicios / cortes de luz.
+const setFullCache = (pin, entry) => {
+    SESSION_FULL_CACHE.set(pin, entry);
+    saveSessionFullCache(pin, JSON.stringify(entry), entry.ts || Date.now())
+        .catch((e) => log.warn('No se pudo persistir el cache de sesión:', e.message));
+};
 
 const getDataVersionFromOdoo = async (configId) => {
     try {
@@ -80,7 +95,7 @@ const refreshSessionInBackground = (pin, body) => {
             const { products = [], categories = [], multi_barcodes = {}, pos_categories = [], ...sessionOnly } = fullData;
             const sessionId = String(sessionOnly.session_id || sessionOnly.pos_session_id || '');
             PRODUCTS_BUFFER.set(sessionId, { products, categories, multi_barcodes, pos_categories, ts: Date.now() });
-            SESSION_FULL_CACHE.set(pin, { products, categories, multi_barcodes, pos_categories, sessionOnly, version, ts: Date.now() });
+            setFullCache(pin, { products, categories, multi_barcodes, pos_categories, sessionOnly, version, ts: Date.now() });
             log.info(`[session-cache] Refresh completado: sesión ${sessionId} (${products.length} productos)`);
         }
     }).catch(err => {
@@ -231,7 +246,7 @@ app.post('/pos_validate_session', async (req, res) => {
                     const { products = [], categories = [], multi_barcodes = {}, pos_categories = [], ...sessionOnly } = fullData;
                     const sessionId = String(sessionOnly.session_id || sessionOnly.pos_session_id || '');
                     PRODUCTS_BUFFER.set(sessionId, { products, categories, multi_barcodes, pos_categories, ts: Date.now() });
-                    SESSION_FULL_CACHE.set(pinIngresado, { products, categories, multi_barcodes, pos_categories, sessionOnly, version, ts: Date.now() });
+                    setFullCache(pinIngresado, { products, categories, multi_barcodes, pos_categories, sessionOnly, version, ts: Date.now() });
                     SESSION_LOADING_JOBS.set(jobId, { status: 'ready', sessionData: { ...sessionOnly, products_ready: true }, sessionId, ts: Date.now() });
                     log.info(`[job ${jobId}] Sesión lista: ${sessionId} (${products.length} productos)`);
                 } else {
@@ -282,6 +297,63 @@ app.get('/api/pos/session-products', (req, res) => {
         multi_barcodes: entry.multi_barcodes,
         pos_categories: entry.pos_categories || []
     });
+});
+
+// --- Recarga de catálogo en 2 fases (preparar en background → aplicar) ---
+app.post('/api/pos/catalog/prepare', (req, res) => {
+    const { config_id, pin, user_id } = req.body || {};
+    if (!config_id || !pin) {
+        return res.status(400).json({ success: false, error: 'Faltan config_id y/o pin' });
+    }
+    const key = String(config_id);
+    const existing = CATALOG_READY.get(key);
+    if (existing && existing.status === 'preparing') {
+        return res.json({ success: true, status: 'preparing', message: 'Ya se está preparando' });
+    }
+    CATALOG_READY.set(key, { status: 'preparing', ts: Date.now() });
+    res.json({ success: true, status: 'preparing' });
+
+    (async () => {
+        try {
+            log.info(`catalog/prepare: bajando catálogo fresco para config ${key}...`);
+            const response = await axios.post(`${ODOO_URL}/pos_validate_session`,
+                { pin: pin.toString(), user_id, db: 'getit' },
+                { timeout: 120000, headers: { 'Content-Type': 'application/json' }, httpsAgent });
+            const d = response.data || {};
+            if (d.authenticated) {
+                CATALOG_READY.set(key, {
+                    status: 'ready', ts: Date.now(),
+                    products: d.products || [], categories: d.categories || [], multi_barcodes: d.multi_barcodes || {},
+                    pos_categories: d.pos_categories || [],
+                });
+                log.success(`catalog/prepare: catálogo listo para config ${key} (${(d.products || []).length} productos)`);
+            } else {
+                CATALOG_READY.set(key, { status: 'error', ts: Date.now(), error: d.error || 'No autenticado' });
+            }
+        } catch (e) {
+            CATALOG_READY.set(key, { status: 'error', ts: Date.now(), error: e.message });
+            log.error(`catalog/prepare: error config ${key}: ${e.message}`);
+        }
+    })();
+});
+
+app.get('/api/pos/catalog/status', (req, res) => {
+    const key = String(req.query.config_id || '');
+    const e = CATALOG_READY.get(key);
+    if (e && Date.now() - e.ts > CATALOG_READY_TTL) { CATALOG_READY.delete(key); return res.json({ success: true, status: 'idle' }); }
+    if (!e) return res.json({ success: true, status: 'idle' });
+    res.json({ success: true, status: e.status, count: e.products ? e.products.length : 0, error: e.error || null });
+});
+
+app.get('/api/pos/catalog/take', (req, res) => {
+    const key = String(req.query.config_id || '');
+    const e = CATALOG_READY.get(key);
+    if (!e || e.status !== 'ready') {
+        return res.status(404).json({ success: false, error: 'El catálogo no está listo' });
+    }
+    CATALOG_READY.delete(key);
+    log.info(`catalog/take: entregando catálogo preparado config ${key} (${e.products.length} productos)`);
+    res.json({ success: true, products: e.products, categories: e.categories, multi_barcodes: e.multi_barcodes, pos_categories: e.pos_categories || [] });
 });
 
 app.get('/api/pos/session-loading-status', (req, res) => {
@@ -471,6 +543,12 @@ app.use('*', (req, res) => {
 async function start() {
     try {
         await initDatabase();
+        // Cargar el cache de sesión persistido (para operar offline tras un corte de luz).
+        try {
+            const rows = await loadSessionFullCache();
+            for (const r of rows) { try { SESSION_FULL_CACHE.set(r.pin, JSON.parse(r.data)); } catch { /* fila corrupta */ } }
+            if (rows.length) log.info(`Cache de sesión cargado desde disco: ${rows.length} sesión(es)`);
+        } catch (e) { log.warn('No se pudo cargar el cache de sesión desde disco:', e.message); }
         const savedPort = await getSetting('APP_PORT', process.env.PORT || '9000');
         const PORT = parseInt(savedPort, 10) || 9000;
         app.listen(PORT, () => {

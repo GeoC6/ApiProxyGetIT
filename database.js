@@ -165,6 +165,16 @@ export const initDatabase = () => {
             db.run(`ALTER TABLE customers ADD COLUMN city TEXT`, () => {});
             db.run(`ALTER TABLE customers ADD COLUMN giro TEXT`, () => {});
 
+            // Cache persistente de la sesión/productos (para sobrevivir a cortes de
+            // luz / reinicios: el cache en memoria se pierde al reiniciar el equipo).
+            db.run(`
+                CREATE TABLE IF NOT EXISTS session_full_cache (
+                    pin TEXT PRIMARY KEY,
+                    data TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL
+                )
+            `, () => { });
+
             db.run(`
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
@@ -185,10 +195,23 @@ export const initDatabase = () => {
     });
 };
 
+// --- Cache persistente de sesión/productos (write-through desde el ApiProxy) ---
+export const saveSessionFullCache = (pin, data, updatedAt) => new Promise((resolve, reject) => {
+    db.run(`INSERT OR REPLACE INTO session_full_cache (pin, data, updated_at) VALUES (?, ?, ?)`, [pin, data, updatedAt], (err) => (err ? reject(err) : resolve()));
+});
+
+export const loadSessionFullCache = () => new Promise((resolve, reject) => {
+    db.all(`SELECT pin, data, updated_at FROM session_full_cache`, [], (err, rows) => (err ? reject(err) : resolve(rows || [])));
+});
+
+export const clearSessionFullCache = () => new Promise((resolve) => {
+    db.run(`DELETE FROM session_full_cache`, [], () => resolve());
+});
+
 export const saveTransaction = (data) => {
     return new Promise((resolve, reject) => {
         const stmt = db.prepare(`
-            INSERT INTO transactions (transaction_data) 
+            INSERT INTO transactions (transaction_data)
             VALUES (?)
         `);
 

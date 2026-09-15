@@ -162,7 +162,7 @@ function buildDTEData(transactionData, tipoDTE = 39, invoiceCustomer = null, tot
             Propina: parseFloat(sale_data.tip_amount || 0),
             CdgVendedor: session_data.company_data?.cashier_name || "autoservicio",
             AjusteSencillo: 0,
-            Vuelto: 0,
+            Vuelto: Math.round(sale_data.change_amount || 0),
             Pagos: (sale_data.payments || []).filter(p => p.monto > 0).map(p => ({
                 desc: p.name || (tbk_data.card_type === "DB" ? "DEBITO" : "CREDITO"),
                 monto: Math.round(Math.abs(p.monto))
@@ -429,6 +429,7 @@ router.post('/create-order', async (req, res) => {
         const tipoDTE = parseInt(order.tipo_dte || 39);
         const totalExempt = parseFloat(order.total_exempt || 0);
         const invoiceCustomer = order.invoice_customer || null;
+        const invoiceWeb = !!order.invoice_web;
 
         let dteResponse = null;
         let voucherNumber = null;
@@ -447,10 +448,10 @@ router.post('/create-order', async (req, res) => {
             log.info('═══════════════════════════════════════════════════════════');
         } else {
             try {
-                dteResponse = tipoDTE === 33
+                dteResponse = (tipoDTE === 33 && invoiceWeb)
                     ? await generateDTEWeb(adaptedData, tipoDTE, invoiceCustomer, totalExempt, sessionId)
                     : await generateDTE(adaptedData, tipoDTE, invoiceCustomer, totalExempt);
-                log.info(` DTE tipo ${tipoDTE} generado con folio: ${dteResponse.folio}`);
+                log.info(` DTE tipo ${tipoDTE}${invoiceWeb && tipoDTE === 33 ? ' (WEB)' : ''} generado con folio: ${dteResponse.folio}`);
             } catch (dteError) {
                 log.error(' Error generando DTE:', dteError.message);
                 throw new Error(`No se pudo generar el DTE: ${dteError.message}`);
@@ -714,7 +715,8 @@ router.post('/create-refund', async (req, res) => {
             reason = 'Anulación de venta',
             company_data,
             lines = [],
-            partner_id = null
+            partner_id = null,
+            nc_web = false
         } = req.body;
 
         if (!session_id || !original_folio) {
@@ -797,32 +799,50 @@ router.post('/create-refund', async (req, res) => {
             session_id: sessionId
         };
 
-        log.info(`Generando NC WEB — folio original: ${original_folio}, tipo: ${original_tipo_dte}, total: ${totalAmount}`);
+        log.info(`Generando NC${nc_web ? ' WEB' : ''} — folio original: ${original_folio}, tipo: ${original_tipo_dte}, total: ${totalAmount}`);
 
         let folioNC;
-        try {
-            const response = await axios.post(`${ODOO_URL}/pos_generate_web_dte`, {
-                session_id: sessionId,
-                dte_data: dteData
-            }, {
+        if (nc_web) {
+            try {
+                const response = await axios.post(`${ODOO_URL}/pos_generate_web_dte`, {
+                    session_id: sessionId,
+                    dte_data: dteData
+                }, {
+                    timeout: 30000,
+                    headers: { 'Content-Type': 'application/json' },
+                    httpsAgent: httpsAgent
+                });
+
+                if (response.data?.error) {
+                    throw new Error(response.data.error);
+                }
+
+                const result = response.data?.result || {};
+                log.info(`Respuesta cruda del servicio web DTE (NC): ${JSON.stringify(result)}`);
+
+                folioNC = extractWebFolio(result);
+                if (!folioNC) {
+                    throw new Error('El servicio web de DTE no devolvió un folio reconocible para la NC.');
+                }
+            } catch (webError) {
+                throw new Error(`No se pudo generar la NC web: ${webError.message}`);
+            }
+        } else {
+            let baseUrl = await getXSignUrl();
+            const xsignBase = baseUrl.replace(/\/sign\/\d+.*$/, '');
+            const finalUrl = `${xsignBase}/sign/61?getTED=false&sendDTE=true`;
+
+            const response = await axios.post(finalUrl, dteData, {
                 timeout: 30000,
                 headers: { 'Content-Type': 'application/json' },
                 httpsAgent: httpsAgent
             });
 
-            if (response.data?.error) {
-                throw new Error(response.data.error);
+            if (response.status !== 200) {
+                throw new Error(`XSign respondió ${response.status} al generar NC`);
             }
 
-            const result = response.data?.result || {};
-            log.info(`Respuesta cruda del servicio web DTE (NC): ${JSON.stringify(result)}`);
-
-            folioNC = extractWebFolio(result);
-            if (!folioNC) {
-                throw new Error('El servicio web de DTE no devolvió un folio reconocible para la NC.');
-            }
-        } catch (webError) {
-            throw new Error(`No se pudo generar la NC web: ${webError.message}`);
+            folioNC = response.data.folio;
         }
 
         log.success(`NC generada con folio: ${folioNC}`);
@@ -926,7 +946,8 @@ function adaptAutoservicioToInternal(frontendData) {
         products: [],
         payments: safePayment,
         discounts: discounts,
-        exchange_return_amount: parseFloat(order.exchange_return_amount || 0)
+        exchange_return_amount: parseFloat(order.exchange_return_amount || 0),
+        change_amount: parseFloat(order.change_amount || 0)
     };
 
     if (products && products.length > 0) {
