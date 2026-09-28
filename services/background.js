@@ -1,11 +1,11 @@
-import axios from 'axios';
+﻿import axios from 'axios';
 import { getPendingTransactions, markAsCompleted, markAsFailed, saveDTEResponse, getDTEResponse, getNextInternalVoucherNumber } from '../database.js';
 import { log } from './logger.js';
 import { addCriticalError } from '../routes/critical-errors.js';
 
 const BACKGROUND_INTERVAL = parseInt(process.env.BACKGROUND_INTERVAL) || 30000;
 const XSIGN_URL = process.env.XSIGN_URL || 'http://localhost:5999';
-const ODOO_URL = process.env.ODOO_URL || 'https://getit.posgo.cl';
+const ODOO_URL = process.env.ODOO_URL || 'https://litz.posgo.cl';
 
 const INTERNAL_VOUCHER_METHODS = {
     7: 'E',
@@ -111,7 +111,7 @@ function buildDTEData(transactionData) {
             Propina: parseFloat(sale_data.tip_amount || 0),
             CdgVendedor: "autoservicio",
             AjusteSencillo: 0,
-            Vuelto: 0,
+            Vuelto: Math.round(sale_data.change_amount || 0),
             Pagos: [{
                 desc: tbk_data.card_type === "DB" ? "DEBITO" : "CREDITO",
                 monto: Math.round(tbk_data.amount)
@@ -286,7 +286,8 @@ async function sendToOdoo(transactionData, dteResponse, isInternalVoucher = fals
             dte_json: dteResponse ? JSON.stringify(dteResponse.originalDTE) : null,
             tipo_dte: isInternalVoucher ? '00' : (dteResponse?.originalDTE?.Encabezado?.IdDoc?.TipoDTE || sale_data.tipo_dte),
             is_internal_voucher: isInternalVoucher,
-            internal_voucher_number: isInternalVoucher ? voucherNumber : ''
+            internal_voucher_number: isInternalVoucher ? voucherNumber : '',
+            vuelto: isInternalVoucher ? 0 : parseFloat(sale_data.change_amount || 0)
         }]
     };
 
@@ -298,7 +299,7 @@ async function sendToOdoo(transactionData, dteResponse, isInternalVoucher = fals
                 const productData = {
                     product_id: parseInt(product.id),
                     name: product.name,
-                    qty: parseInt(product.cant),
+                    qty: parseFloat(product.cant),
                     price_unit: parseFloat(product.price),
                     price_subtotal: parseFloat(product.price * product.cant),
                     price_subtotal_incl: parseFloat((product.price * product.cant) * 1.19),
@@ -340,7 +341,7 @@ async function sendToOdoo(transactionData, dteResponse, isInternalVoucher = fals
 
             affectedLines.forEach((line, idx) => {
                 const isLast = idx === affectedLines.length - 1;
-                const priceLine = parseFloat(line.price_unit) * parseInt(line.qty);
+                const priceLine = parseFloat(line.price_unit) * parseFloat(line.qty);
                 const discountPct = subtotalAffected ? (priceLine * 100) / subtotalAffected : 0;
                 const discountAmt = isLast
                     ? (discount.discount_amount - totalApplied)

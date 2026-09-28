@@ -1,4 +1,4 @@
-import { fileURLToPath } from 'url';
+﻿import { fileURLToPath } from 'url';
 import path from 'path';
 import dotenv from 'dotenv';
 import compression from 'compression';
@@ -39,7 +39,7 @@ const httpsAgent = new https.Agent({
 });
 
 const app = express();
-const ODOO_URL = process.env.ODOO_URL || 'https://getit.posgo.cl';
+const ODOO_URL = process.env.ODOO_URL || 'https://litz.posgo.cl';
 
 // Buffer temporal de productos por sesión (TTL 3 min, solo dura el login)
 const PRODUCTS_BUFFER = new Map();
@@ -291,7 +291,7 @@ app.get('/api/config', async (req, res) => {
             TBK_URL: saved.TBK_URL || process.env.TBK_URL || 'https://localhost:8001',
             XSIGN_URL: saved.XSIGN_URL || process.env.XSIGN_URL || 'http://localhost:5999',
             KDS_URL: saved.KDS_URL || process.env.KDS_URL || 'http://192.168.1.83:9001',
-            ODOO_URL: saved.ODOO_URL || process.env.ODOO_URL || 'https://getit.posgo.cl',
+            ODOO_URL: saved.ODOO_URL || process.env.ODOO_URL || 'https://litz.posgo.cl',
             PRINTER_ENABLED: saved.PRINTER_ENABLED || process.env.PRINTER_ENABLED || 'true',
             PRINTER_TICKET_NAME: saved.PRINTER_TICKET_NAME || process.env.PRINTER_TICKET_NAME || '',
             FLEJE_PRINTER_NAME: saved.FLEJE_PRINTER_NAME || process.env.FLEJE_PRINTER_NAME || 'POS-80',

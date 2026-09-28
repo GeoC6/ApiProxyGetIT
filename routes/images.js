@@ -1,9 +1,9 @@
-import express from 'express';
+﻿import express from 'express';
 import axios from 'axios';
 import { db } from '../database.js';
 
 const router = express.Router();
-const ODOO_URL = process.env.ODOO_URL || 'https://getit.posgo.cl';
+const ODOO_URL = process.env.ODOO_URL || 'https://litz.posgo.cl';
 
 router.get('/products/:productId', async (req, res) => {
     const { productId } = req.params;

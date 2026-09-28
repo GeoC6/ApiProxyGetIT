@@ -1,4 +1,4 @@
-import express from 'express';
+﻿import express from 'express';
 import axios from 'axios';
 import {
     getOrdersForDisplay,
@@ -11,7 +11,7 @@ import {
 import { log } from '../services/logger.js';
 import { sendWhatsAppNotification } from '../services/whatsapp-notifier.js'; // 📱 NUEVO
 
-const ODOO_URL = process.env.ODOO_URL || 'https://getit.posgo.cl';
+const ODOO_URL = process.env.ODOO_URL || 'https://litz.posgo.cl';
 
 const router = express.Router();
 

@@ -1,4 +1,4 @@
-import express from 'express';
+﻿import express from 'express';
 import { saveTransactionWithOrder, getNextInternalVoucherNumber, getSetting } from '../database.js';
 import { log } from '../services/logger.js';
 import printerService from '../services/printerService.js';
@@ -7,7 +7,7 @@ import https from 'https';
 
 const router = express.Router();
 
-const ODOO_URL = process.env.ODOO_URL || 'https://getit.posgo.cl';
+const ODOO_URL = process.env.ODOO_URL || 'https://litz.posgo.cl';
 
 const getXSignUrl = () => getSetting('XSIGN_URL', process.env.XSIGN_URL || 'http://localhost:5999');
 const getTbkUrl = () => getSetting('TBK_URL', process.env.TBK_URL || 'https://localhost:8001');
@@ -162,7 +162,7 @@ function buildDTEData(transactionData, tipoDTE = 39, invoiceCustomer = null, tot
             Propina: parseFloat(sale_data.tip_amount || 0),
             CdgVendedor: session_data.company_data?.cashier_name || "autoservicio",
             AjusteSencillo: 0,
-            Vuelto: 0,
+            Vuelto: Math.round(sale_data.change_amount || 0),
             Pagos: (sale_data.payments || []).filter(p => p.monto > 0).map(p => ({
                 desc: p.name || (tbk_data.card_type === "DB" ? "DEBITO" : "CREDITO"),
                 monto: Math.round(Math.abs(p.monto))
@@ -225,12 +225,13 @@ function buildDTEData(transactionData, tipoDTE = 39, invoiceCustomer = null, tot
                     descripcion = "Producto personalizado";
                 }
 
+                const qtyRounded = Math.round(product.cant * 1000000) / 1000000;
                 const detalleLine = {
                     NroLinDet: lineNumber++,
                     CdgItem: [{ TpoCodigo: "INT1", VlrCodigo: product.id.toString() }],
                     NmbItem: productName,
                     DscItem: descripcion,
-                    QtyItem: product.cant,
+                    QtyItem: qtyRounded,
                     PrcItem: Math.round(product.price),
                     MontoItem: Math.round(product.price * product.cant)
                 };
@@ -852,7 +853,8 @@ function adaptAutoservicioToInternal(frontendData) {
         products: [],
         payments: safePayment,
         discounts: discounts,
-        exchange_return_amount: parseFloat(order.exchange_return_amount || 0)
+        exchange_return_amount: parseFloat(order.exchange_return_amount || 0),
+        change_amount: parseFloat(order.change_amount || 0)
     };
 
     if (products && products.length > 0) {
@@ -861,7 +863,7 @@ function adaptAutoservicioToInternal(frontendData) {
                 id: parseInt(product.product_id),
                 name: product.name || product.product_name || `Producto ID: ${product.product_id}`,
                 price: parseFloat(product.price_subtotal / product.qty),
-                cant: parseInt(product.qty),
+                cant: parseFloat(product.qty),
                 customization: product.customization || '',
                 selected_attributes: product.selected_attributes || null,
                 is_exempt: product.is_exempt || false
