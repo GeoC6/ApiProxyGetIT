@@ -3,6 +3,7 @@ import path from 'path';
 import dotenv from 'dotenv';
 import compression from 'compression';
 import https from 'https';
+import crypto from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -13,7 +14,7 @@ import express from 'express';
 import cors from 'cors';
 import fs from 'fs';
 import axios from 'axios';
-import { initDatabase, db, getSetting, setSetting, getAllSettings } from './database.js';
+import { initDatabase, db, getSetting, setSetting, getAllSettings, saveSessionFullCache, loadSessionFullCache } from './database.js';
 import { log } from './services/logger.js';
 import autoservicioRouter from './routes/autoservicio.js';
 import proxyRouter from './routes/proxy.js';
@@ -41,9 +42,66 @@ const httpsAgent = new https.Agent({
 const app = express();
 const ODOO_URL = process.env.ODOO_URL || 'https://litz.posgo.cl';
 
-// Buffer temporal de productos por sesión (TTL 3 min, solo dura el login)
+// Buffer temporal de productos por sesión (TTL 10 min)
 const PRODUCTS_BUFFER = new Map();
-const PRODUCTS_BUFFER_TTL = 3 * 60 * 1000;
+const PRODUCTS_BUFFER_TTL = 10 * 60 * 1000;
+
+// Recarga de catálogo en segundo plano (por config_id): estado + catálogo listo.
+const CATALOG_READY = new Map();
+const CATALOG_READY_TTL = 30 * 60 * 1000;
+
+// Caché completa de sesión por PIN (sin TTL fijo — se invalida por versión)
+const SESSION_FULL_CACHE = new Map();
+// Ampliado para resiliencia offline: tras un corte de luz el cache (ahora persistente
+// en disco) debe seguir sirviendo aunque pasen horas/días; la frescura la controla el
+// hash de versión cuando vuelve internet.
+const SESSION_FULL_CACHE_TTL = 7 * 24 * 60 * 60 * 1000; // 7 días
+
+// Setea el cache en memoria Y lo persiste en disco (write-through) — así sobrevive a
+// reinicios / cortes de luz.
+const setFullCache = (pin, entry) => {
+    SESSION_FULL_CACHE.set(pin, entry);
+    saveSessionFullCache(pin, JSON.stringify(entry), entry.ts || Date.now())
+        .catch((e) => log.warn('No se pudo persistir el cache de sesión:', e.message));
+};
+
+const getDataVersionFromOdoo = async (configId) => {
+    try {
+        const response = await axios.get(`${ODOO_URL}/pos_data_version`, {
+            params: { config_id: configId || 0 },
+            timeout: 5000,
+            httpsAgent,
+        });
+        if (response.status === 200 && response.data?.version) return response.data.version;
+        return null;
+    } catch {
+        return null;
+    }
+};
+
+// Jobs de carga asíncrona de sesión
+const SESSION_LOADING_JOBS = new Map();
+const JOB_TTL = 15 * 60 * 1000; // 15 min
+
+const refreshSessionInBackground = (pin, body) => {
+    axios.post(`${ODOO_URL}/pos_validate_session`, body, {
+        timeout: 120000,
+        headers: { 'Content-Type': 'application/json' },
+        httpsAgent
+    }).then(async response => {
+        const fullData = response.data;
+        if (fullData?.authenticated) {
+            const version = await getDataVersionFromOdoo(fullData.config_id);
+            const { products = [], categories = [], multi_barcodes = {}, pos_categories = [], ...sessionOnly } = fullData;
+            const sessionId = String(sessionOnly.session_id || sessionOnly.pos_session_id || '');
+            PRODUCTS_BUFFER.set(sessionId, { products, categories, multi_barcodes, pos_categories, ts: Date.now() });
+            setFullCache(pin, { products, categories, multi_barcodes, pos_categories, sessionOnly, version, ts: Date.now() });
+            log.info(`[session-cache] Refresh completado: sesión ${sessionId} (${products.length} productos)`);
+        }
+    }).catch(err => {
+        log.warn('[session-cache] Background refresh falló:', err.message);
+    });
+};
 
 app.use(compression());
 app.use(cors());
@@ -65,7 +123,13 @@ app.use((req, res, next) => {
     next();
 });
 
+// Hash de la contraseña para poder validar contra el cache offline sin
+// guardar el password en texto plano en el SQLite local.
+const hashAuthCredential = (username, password) =>
+    crypto.createHash('sha256').update(`${username}::${password}`).digest('hex');
+
 app.post('/authenticate_user', async (req, res) => {
+    const { username, password } = req.body || {};
     try {
         log.info('Proxy: /authenticate_user → Odoo');
         const response = await axios.post(`${ODOO_URL}/authenticate_user`, req.body, {
@@ -73,9 +137,45 @@ app.post('/authenticate_user', async (req, res) => {
             headers: { 'Content-Type': 'application/json' },
             httpsAgent: httpsAgent
         });
+
+        if (response.data?.success && username && password) {
+            // Guardar credenciales (hasheadas) + datos de usuario para poder
+            // seguir autenticando localmente si Odoo no responde más tarde.
+            await setSetting('CACHED_ADMIN_AUTH', JSON.stringify({
+                hash: hashAuthCredential(username, password),
+                user_id: response.data.user_id,
+                username: response.data.username,
+                name: response.data.name,
+            }));
+        }
+
         res.json(response.data);
     } catch (error) {
         log.error('Error en proxy /authenticate_user:', error.message);
+
+        // Sin internet/Odoo caído → intentar con las últimas credenciales
+        // válidas guardadas localmente, para no bloquear al cajero.
+        if (username && password) {
+            try {
+                const cachedRaw = await getSetting('CACHED_ADMIN_AUTH', null);
+                if (cachedRaw) {
+                    const cached = JSON.parse(cachedRaw);
+                    if (cached.hash === hashAuthCredential(username, password)) {
+                        log.warn('authenticate_user: usando credenciales cacheadas (sin conexión a Odoo)');
+                        return res.json({
+                            success: true,
+                            user_id: cached.user_id,
+                            username: cached.username,
+                            name: cached.name,
+                            source: 'cache',
+                        });
+                    }
+                }
+            } catch (cacheErr) {
+                log.warn('authenticate_user: error leyendo cache local:', cacheErr.message);
+            }
+        }
+
         res.status(500).json({ success: false, error: error.message });
     }
 });
@@ -85,52 +185,86 @@ app.post('/pos_validate_session', async (req, res) => {
         const pinIngresado = (req.body.pin || '').toString().trim();
         log.info(`Proxy: /pos_validate_session → PIN recibido: ${'*'.repeat(pinIngresado.length)}`);
 
+        // 1. Validación PIN local (instantánea)
         const localPin = await getSetting('POS_PIN', null);
-        log.info(`PIN local configurado: ${localPin ? '*'.repeat(localPin.trim().length) : '(sin restricción)'}`);
-
         if (localPin && localPin.trim() !== '') {
             if (pinIngresado !== localPin.trim()) {
                 log.error('PIN rechazado por validación local');
-                return res.status(401).json({ error: 'PIN incorrecto' });
+                return res.status(401).json({ authenticated: false, error: 'PIN incorrecto' });
             }
             log.info('PIN local verificado correctamente');
         }
 
-        const response = await axios.post(`${ODOO_URL}/pos_validate_session`, req.body, {
-            timeout: 60000,
-            headers: { 'Content-Type': 'application/json' },
-            httpsAgent: httpsAgent
-        });
+        const cached = SESSION_FULL_CACHE.get(pinIngresado);
+        const hasFreshCache = cached && Date.now() - cached.ts < SESSION_FULL_CACHE_TTL;
 
-        const fullData = response.data;
+        // 2. Si hay caché → verificar versión antes de responder
+        if (hasFreshCache) {
+            const currentVersion = await getDataVersionFromOdoo(cached.sessionOnly?.config_id);
 
-        // Si vino autenticado, separar productos del resto
-        if (fullData && fullData.authenticated) {
-            const sessionId = fullData.session_id || fullData.pos_session_id;
-            const products = fullData.products || [];
-            const categories = fullData.categories || [];
-            const multi_barcodes = fullData.multi_barcodes || {};
-
-            // Guardar en buffer temporal, el frontend los pedirá en segundo paso
-            PRODUCTS_BUFFER.set(String(sessionId), {
-                products,
-                categories,
-                multi_barcodes,
-                ts: Date.now()
-            });
-
-            // Limpiar buffer expirados
-            for (const [k, v] of PRODUCTS_BUFFER.entries()) {
-                if (Date.now() - v.ts > PRODUCTS_BUFFER_TTL) PRODUCTS_BUFFER.delete(k);
+            if (currentVersion === null) {
+                // Sin internet → usar caché como fallback
+                const { products, categories, multi_barcodes, pos_categories, sessionOnly } = cached;
+                const sessionId = String(sessionOnly.session_id || sessionOnly.pos_session_id || '');
+                PRODUCTS_BUFFER.set(sessionId, { products, categories, multi_barcodes, pos_categories, ts: Date.now() });
+                log.info(`Sesión ${sessionId} desde caché (fallback sin internet, ${products.length} productos)`);
+                return res.json({ ...sessionOnly, authenticated: true, products_ready: true });
             }
 
-            // Devolver sin el peso grande
-            const { products: _p, categories: _c, multi_barcodes: _m, ...sessionOnly } = fullData;
-            log.info(`pos_validate_session: sesión ${sessionId} autenticada, productos separados (${products.length})`);
-            return res.json({ ...sessionOnly, products_ready: true });
+            if (currentVersion === cached.version) {
+                // Misma versión → caché vigente, responder inmediatamente sin tocar Odoo
+                const { products, categories, multi_barcodes, pos_categories, sessionOnly } = cached;
+                const sessionId = String(sessionOnly.session_id || sessionOnly.pos_session_id || '');
+                PRODUCTS_BUFFER.set(sessionId, { products, categories, multi_barcodes, pos_categories, ts: Date.now() });
+                log.info(`Sesión ${sessionId} desde caché (versión sin cambios, ${products.length} productos)`);
+                return res.json({ ...sessionOnly, authenticated: true, products_ready: true });
+            }
+
+            // Versión cambió → responder con caché actual y refrescar en background
+            log.info(`Versión cambió en Odoo — usando caché mientras se refresca en background`);
+            const { products, categories, multi_barcodes, pos_categories, sessionOnly } = cached;
+            const sessionId = String(sessionOnly.session_id || sessionOnly.pos_session_id || '');
+            PRODUCTS_BUFFER.set(sessionId, { products, categories, multi_barcodes, pos_categories, ts: Date.now() });
+            refreshSessionInBackground(pinIngresado, req.body);
+            return res.json({ ...sessionOnly, authenticated: true, products_ready: true });
         }
 
-        res.json(fullData);
+        // 3. Sin caché → cargar desde Odoo en background, responder inmediatamente
+        const jobId = `job_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        SESSION_LOADING_JOBS.set(jobId, { status: 'loading', ts: Date.now() });
+
+        setImmediate(async () => {
+            try {
+                const response = await axios.post(`${ODOO_URL}/pos_validate_session`, req.body, {
+                    timeout: 120000,
+                    headers: { 'Content-Type': 'application/json' },
+                    httpsAgent
+                });
+                const fullData = response.data;
+                if (fullData?.authenticated) {
+                    const version = await getDataVersionFromOdoo(fullData.config_id);
+                    const { products = [], categories = [], multi_barcodes = {}, pos_categories = [], ...sessionOnly } = fullData;
+                    const sessionId = String(sessionOnly.session_id || sessionOnly.pos_session_id || '');
+                    PRODUCTS_BUFFER.set(sessionId, { products, categories, multi_barcodes, pos_categories, ts: Date.now() });
+                    setFullCache(pinIngresado, { products, categories, multi_barcodes, pos_categories, sessionOnly, version, ts: Date.now() });
+                    SESSION_LOADING_JOBS.set(jobId, { status: 'ready', sessionData: { ...sessionOnly, products_ready: true }, sessionId, ts: Date.now() });
+                    log.info(`[job ${jobId}] Sesión lista: ${sessionId} (${products.length} productos)`);
+                } else {
+                    SESSION_LOADING_JOBS.set(jobId, { status: 'error', error: fullData?.error || 'Autenticación fallida', ts: Date.now() });
+                    log.warn(`[job ${jobId}] Autenticación fallida en Odoo`);
+                }
+                for (const [k, v] of SESSION_LOADING_JOBS.entries()) {
+                    if (Date.now() - v.ts > JOB_TTL) SESSION_LOADING_JOBS.delete(k);
+                }
+            } catch (err) {
+                SESSION_LOADING_JOBS.set(jobId, { status: 'error', error: err.message, ts: Date.now() });
+                log.error(`[job ${jobId}] Error en carga de sesión:`, err.message);
+            }
+        });
+
+        log.info(`[job ${jobId}] Sin caché — cargando desde Odoo en background`);
+        return res.json({ authenticated: true, session_loading: true, job_id: jobId });
+
     } catch (error) {
         log.error('Error en proxy /pos_validate_session:', error.message);
         res.status(500).json({ success: false, error: error.message });
@@ -155,9 +289,78 @@ app.get('/api/pos/session-products', (req, res) => {
     if (!entry) {
         return res.status(404).json({ success: false, error: 'Productos no disponibles, vuelve a iniciar sesión' });
     }
-    PRODUCTS_BUFFER.delete(sessionId);
     log.info(`session-products: entregando ${entry.products.length} productos para sesión ${sessionId}`);
-    res.json({ success: true, products: entry.products, categories: entry.categories, multi_barcodes: entry.multi_barcodes });
+    res.json({
+        success: true,
+        products: entry.products,
+        categories: entry.categories,
+        multi_barcodes: entry.multi_barcodes,
+        pos_categories: entry.pos_categories || []
+    });
+});
+
+// --- Recarga de catálogo en 2 fases (preparar en background → aplicar) ---
+app.post('/api/pos/catalog/prepare', (req, res) => {
+    const { config_id, pin, user_id } = req.body || {};
+    if (!config_id || !pin) {
+        return res.status(400).json({ success: false, error: 'Faltan config_id y/o pin' });
+    }
+    const key = String(config_id);
+    const existing = CATALOG_READY.get(key);
+    if (existing && existing.status === 'preparing') {
+        return res.json({ success: true, status: 'preparing', message: 'Ya se está preparando' });
+    }
+    CATALOG_READY.set(key, { status: 'preparing', ts: Date.now() });
+    res.json({ success: true, status: 'preparing' });
+
+    (async () => {
+        try {
+            log.info(`catalog/prepare: bajando catálogo fresco para config ${key}...`);
+            const response = await axios.post(`${ODOO_URL}/pos_validate_session`,
+                { pin: pin.toString(), user_id, db: 'getit' },
+                { timeout: 120000, headers: { 'Content-Type': 'application/json' }, httpsAgent });
+            const d = response.data || {};
+            if (d.authenticated) {
+                CATALOG_READY.set(key, {
+                    status: 'ready', ts: Date.now(),
+                    products: d.products || [], categories: d.categories || [], multi_barcodes: d.multi_barcodes || {},
+                    pos_categories: d.pos_categories || [],
+                });
+                log.success(`catalog/prepare: catálogo listo para config ${key} (${(d.products || []).length} productos)`);
+            } else {
+                CATALOG_READY.set(key, { status: 'error', ts: Date.now(), error: d.error || 'No autenticado' });
+            }
+        } catch (e) {
+            CATALOG_READY.set(key, { status: 'error', ts: Date.now(), error: e.message });
+            log.error(`catalog/prepare: error config ${key}: ${e.message}`);
+        }
+    })();
+});
+
+app.get('/api/pos/catalog/status', (req, res) => {
+    const key = String(req.query.config_id || '');
+    const e = CATALOG_READY.get(key);
+    if (e && Date.now() - e.ts > CATALOG_READY_TTL) { CATALOG_READY.delete(key); return res.json({ success: true, status: 'idle' }); }
+    if (!e) return res.json({ success: true, status: 'idle' });
+    res.json({ success: true, status: e.status, count: e.products ? e.products.length : 0, error: e.error || null });
+});
+
+app.get('/api/pos/catalog/take', (req, res) => {
+    const key = String(req.query.config_id || '');
+    const e = CATALOG_READY.get(key);
+    if (!e || e.status !== 'ready') {
+        return res.status(404).json({ success: false, error: 'El catálogo no está listo' });
+    }
+    CATALOG_READY.delete(key);
+    log.info(`catalog/take: entregando catálogo preparado config ${key} (${e.products.length} productos)`);
+    res.json({ success: true, products: e.products, categories: e.categories, multi_barcodes: e.multi_barcodes, pos_categories: e.pos_categories || [] });
+});
+
+app.get('/api/pos/session-loading-status', (req, res) => {
+    const jobId = req.query.job_id || '';
+    const job = SESSION_LOADING_JOBS.get(jobId);
+    if (!job) return res.status(404).json({ status: 'not_found' });
+    res.json(job);
 });
 
 app.post('/check_session_exists', async (req, res) => {
@@ -340,6 +543,12 @@ app.use('*', (req, res) => {
 async function start() {
     try {
         await initDatabase();
+        // Cargar el cache de sesión persistido (para operar offline tras un corte de luz).
+        try {
+            const rows = await loadSessionFullCache();
+            for (const r of rows) { try { SESSION_FULL_CACHE.set(r.pin, JSON.parse(r.data)); } catch { /* fila corrupta */ } }
+            if (rows.length) log.info(`Cache de sesión cargado desde disco: ${rows.length} sesión(es)`);
+        } catch (e) { log.warn('No se pudo cargar el cache de sesión desde disco:', e.message); }
         const savedPort = await getSetting('APP_PORT', process.env.PORT || '9000');
         const PORT = parseInt(savedPort, 10) || 9000;
         app.listen(PORT, () => {

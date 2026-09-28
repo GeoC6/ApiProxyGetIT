@@ -13,6 +13,35 @@ const INTERNAL_VOUCHER_METHODS = {
     9: 'A'
 };
 
+// Re-apunta una transacción encolada offline a la sesión que esté REALMENTE
+// abierta ahora para esa caja, en vez de la que estaba abierta cuando se vendió
+// (pudo haberse cerrado mientras no había internet). Si no se puede consultar
+// (sin config_id, o Odoo sigue sin responder) se deja el session_id original
+// tal cual — el reintento seguirá funcionando igual que antes de este cambio.
+async function repointToCurrentSession(transactionData) {
+    const configId = transactionData?.session_data?.config_id;
+    if (!configId) return transactionData;
+
+    try {
+        const response = await axios.get(`${ODOO_URL}/pos_get_open_session_id`, {
+            params: { config_id: configId },
+            timeout: 10000
+        });
+
+        const currentSessionId = response.data?.session_id;
+        const originalSessionId = transactionData.session_data.session_id;
+
+        if (currentSessionId && currentSessionId !== originalSessionId) {
+            log.warn(`Sesión ${originalSessionId} ya no es la abierta para config ${configId} — re-apuntando a ${currentSessionId}`);
+            transactionData.session_data.session_id = currentSessionId;
+        }
+    } catch (err) {
+        log.warn(`No se pudo verificar sesión abierta actual (config ${configId}): ${err.message}`);
+    }
+
+    return transactionData;
+}
+
 let processorState = {
     isProcessing: false,
     currentTransactionId: null,
@@ -304,7 +333,8 @@ async function sendToOdoo(transactionData, dteResponse, isInternalVoucher = fals
                     price_subtotal: parseFloat(product.price * product.cant),
                     price_subtotal_incl: parseFloat((product.price * product.cant) * 1.19),
                     discount: 0,
-                    customer_note: ''
+                    customer_note: '',
+                    tipo_venta: 'regular'
                 };
 
                 if (product.customization) {
@@ -363,6 +393,10 @@ async function sendToOdoo(transactionData, dteResponse, isInternalVoucher = fals
                 line.customer_note = line.customer_note
                     ? `${line.customer_note}, ${discount.promotion_name}`
                     : discount.promotion_name;
+
+                if (discount.tipo_venta) {
+                    line.tipo_venta = discount.tipo_venta;
+                }
             });
         });
 
@@ -440,6 +474,7 @@ async function processTransaction(transaction) {
             }
         }
 
+        await repointToCurrentSession(transactionData);
         await sendToOdoo(transactionData, dteResponse, isVoucher, voucherNumber);
 
         await markAsCompleted(transaction.id);

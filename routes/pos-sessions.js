@@ -478,6 +478,44 @@ router.post('/check-supervisor-pin', async (req, res) => {
     }
 });
 
+router.get('/cash-drawer-password', async (req, res) => {
+    try {
+        const { company_id } = req.query;
+        const url = company_id
+            ? `${ODOO_URL}/pos/cash_drawer_password?company_id=${company_id}`
+            : `${ODOO_URL}/pos/cash_drawer_password`;
+        const response = await axios.get(url, { timeout: 10000 });
+        const pwd = response.data?.password;
+        if (!pwd) return res.status(404).json({ success: false, error: 'Sin contraseña configurada' });
+        res.json({ success: true, password: pwd });
+    } catch (error) {
+        res.status(500).json({ success: false, error: getSimpleErrorMessage(error) });
+    }
+});
+
+router.post('/verify_close_pin', async (req, res) => {
+    try {
+        log.info('Proxy: /api/pos/verify_close_pin → Odoo');
+
+        const formData = new URLSearchParams();
+        for (const [key, value] of Object.entries(req.body || {})) {
+            formData.append(key, value);
+        }
+
+        const response = await axios.post(`${ODOO_URL}/api/pos/verify_close_pin`, formData, {
+            timeout: 15000,
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+        });
+
+        res.json(response.data);
+    } catch (error) {
+        const simpleError = getSimpleErrorMessage(error);
+        log.error('Error en proxy verify_close_pin:', simpleError);
+        const status = error.response?.status || 500;
+        res.status(status).json({ success: false, error: error.response?.data?.error || simpleError });
+    }
+});
+
 router.post('/verify_float_override', async (req, res) => {
     try {
         log.info('Proxy: /api/pos/verify_float_override → Odoo');
