@@ -354,14 +354,14 @@ class PrinterService {
             parts.push(LEFT, logoBuffer, Buffer.from([0x1B, 0x4A, 0x04]));
         } catch (e) {
             log.warn(`[Fleje] Logo no disponible, usando texto: ${e.message}`);
-            parts.push(LEFT, BOLD_ON, t('GETit'), FEED_SMALL, BOLD_OFF);
+            parts.push(LEFT, BOLD_ON, t('LITZ'), FEED_SMALL, BOLD_OFF);
         }
 
         // Fecha en esquina superior derecha
         const fecha = new Date().toLocaleDateString('es-CL');
         parts.push(RIGHT, t(`${fecha}`), FEED_SMALL);
 
-        // Nombre en doble ANCHO (no altura) → gap mínimo igual que GETit→nombre
+        // Nombre en doble ANCHO (no altura) → gap mínimo igual que logo→nombre
         parts.push(LEFT, BOLD_ON, SIZE_WIDE, t(name), FEED_SMALL, SIZE_NORMAL, BOLD_OFF);
 
         // Precio centrado (3x ancho, 2x alto)
