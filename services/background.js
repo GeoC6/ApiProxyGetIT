@@ -5,7 +5,7 @@ import { addCriticalError } from '../routes/critical-errors.js';
 
 const BACKGROUND_INTERVAL = parseInt(process.env.BACKGROUND_INTERVAL) || 30000;
 const XSIGN_URL = process.env.XSIGN_URL || 'http://localhost:5999';
-const ODOO_URL = process.env.ODOO_URL || 'https://litz.posgo.cl';
+const ODOO_URL = process.env.ODOO_URL || 'https://getit.posgo.cl';
 
 const INTERNAL_VOUCHER_METHODS = {
     7: 'E',
@@ -139,7 +139,7 @@ function buildDTEData(transactionData) {
         infoPagos: {
             Propina: parseFloat(sale_data.tip_amount || 0),
             CdgVendedor: "autoservicio",
-            AjusteSencillo: 0,
+            AjusteSencillo: Math.round(sale_data.rounding_amount || 0),
             Vuelto: Math.round(sale_data.change_amount || 0),
             Pagos: [{
                 desc: tbk_data.card_type === "DB" ? "DEBITO" : "CREDITO",

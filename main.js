@@ -61,7 +61,7 @@ class APISystemTray {
     }
 
     initializeApp() {
-        app.setAppUserModelId('Api Autoservicio Litz');
+        app.setAppUserModelId('API Autoservicio');
 
         app.on('window-all-closed', (e) => {
             if (!isQuitting) e.preventDefault();
@@ -85,7 +85,7 @@ class APISystemTray {
     createSystemTray() {
         const icon = this.loadIcon();
         tray = new Tray(icon);
-        tray.setToolTip(`Api Autoservicio Litz - Puerto ${PORT}`);
+        tray.setToolTip(`API Autoservicio - Puerto ${PORT}`);
         this.updateTrayMenu();
 
         tray.on('double-click', () => this.openDashboard());
@@ -113,10 +113,10 @@ class APISystemTray {
         if (process.platform !== 'win32') return false;
         try {
             const result = execSync(
-                'reg query "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v "Api Autoservicio Litz"',
+                'reg query "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v "API Autoservicio"',
                 { encoding: 'utf8' }
             );
-            return result.includes('Api Autoservicio Litz');
+            return result.includes('API Autoservicio');
         } catch (error) {
             return false;
         }
@@ -129,7 +129,7 @@ class APISystemTray {
         }
         try {
             const appPath = process.execPath;
-            const command = `reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v "Api Autoservicio Litz" /d "${appPath}" /f`;
+            const command = `reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v "API Autoservicio" /d "${appPath}" /f`;
             exec(command, (error) => {
                 if (error) console.log('No se pudo configurar auto-start:', error.message);
                 else console.log('Auto-start configurado correctamente');
@@ -170,7 +170,7 @@ class APISystemTray {
         dashboardWindow = new BrowserWindow({
             width: 1200,
             height: 800,
-            title: 'Panel de Control - Api Autoservicio Litz',
+            title: 'Panel de Control - API Autoservicio',
             icon: iconPath,
             webPreferences: { nodeIntegration: true, contextIsolation: false, enableRemoteModule: true },
             autoHideMenuBar: true,
@@ -201,7 +201,7 @@ class APISystemTray {
         configWindow = new BrowserWindow({
             width: 1000,
             height: 700,
-            title: 'Configuración - Api Autoservicio Litz',
+            title: 'Configuración - API Autoservicio',
             icon: iconPath,
             webPreferences: { nodeIntegration: true, contextIsolation: false },
             autoHideMenuBar: true,
@@ -235,7 +235,7 @@ class APISystemTray {
     showWelcomeNotification() {
         try {
             tray.displayBalloon({
-                title: 'Api Autoservicio Litz Iniciada',
+                title: 'API Autoservicio Iniciada',
                 content: `Puerto ${PORT} activo - Click derecho para opciones`,
                 iconType: 'info'
             });
@@ -339,7 +339,7 @@ if (!singleInstanceLock) {
         if (tray) {
             tray.displayBalloon({
                 title: 'Ya en ejecución',
-                content: 'Api Autoservicio Litz ya está activa',
+                content: 'API Autoservicio ya está activa',
                 iconType: 'warning'
             });
         }

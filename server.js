@@ -14,14 +14,14 @@ import express from 'express';
 import cors from 'cors';
 import fs from 'fs';
 import axios from 'axios';
-import { initDatabase, db, getSetting, setSetting, getAllSettings, saveSessionFullCache, loadSessionFullCache } from './database.js';
+import { initDatabase, db, getSetting, setSetting, getAllSettings, saveSessionFullCache, loadSessionFullCache, clearSessionFullCache } from './database.js';
 import { log } from './services/logger.js';
 import autoservicioRouter from './routes/autoservicio.js';
 import proxyRouter from './routes/proxy.js';
 import syncStatusRouter from './routes/sync-status.js';
 import { startBackgroundProcessor } from './services/background.js';
 import criticalErrorsRouter from './routes/critical-errors.js';
-import posSessionsRouter from './routes/pos-sessions.js';
+import posSessionsRouter, { clearPosSessionsCache } from './routes/pos-sessions.js';
 import ordersRouter from './routes/orders.js';
 import logsRouter from './routes/logs.js';
 import transbankRouter from './routes/transbankc2c.js';
@@ -40,7 +40,7 @@ const httpsAgent = new https.Agent({
 });
 
 const app = express();
-const ODOO_URL = process.env.ODOO_URL || 'https://litz.posgo.cl';
+const ODOO_URL = process.env.ODOO_URL || 'https://getit.posgo.cl';
 
 // Buffer temporal de productos por sesión (TTL 10 min)
 const PRODUCTS_BUFFER = new Map();
@@ -418,6 +418,34 @@ app.post('/api/pos/payment_totals', async (req, res) => {
     }
 });
 
+// Extiende /api/pos/sessions/clear-cache (definido originalmente en pos-sessions.js,
+// que solo limpiaba su propio Map suelto). El login real pasa por el cache de acá
+// (SESSION_FULL_CACHE, keyed por PIN de la CAJA, no del cajero) — por eso al
+// cambiar de turno con la misma caja, un cache viejo puede seguir devolviendo la
+// sesión anterior ya cerrada. Al registrarse antes del mount del router (línea de
+// abajo), esta ruta intercepta el request y el handler viejo nunca se alcanza.
+app.post('/api/pos/sessions/clear-cache', async (req, res) => {
+    try {
+        const sessionEntries = SESSION_FULL_CACHE.size;
+        SESSION_FULL_CACHE.clear();
+        PRODUCTS_BUFFER.clear();
+        CATALOG_READY.clear();
+        SESSION_LOADING_JOBS.clear();
+        await clearSessionFullCache();
+        const posSessionEntries = clearPosSessionsCache();
+
+        log.warn(`Cache del ApiProxy limpiado manualmente (sesión: ${sessionEntries}, pos-sessions: ${posSessionEntries})`);
+        res.json({
+            success: true,
+            message: 'Cache del servidor limpiado correctamente',
+            sessions_removed: sessionEntries + posSessionEntries
+        });
+    } catch (error) {
+        log.error('Error limpiando cache:', error.message);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
 app.get('/', (req, res) => {
     res.json({
         name: 'API Intermedia Autoservicio',
@@ -494,7 +522,7 @@ app.get('/api/config', async (req, res) => {
             TBK_URL: saved.TBK_URL || process.env.TBK_URL || 'https://localhost:8001',
             XSIGN_URL: saved.XSIGN_URL || process.env.XSIGN_URL || 'http://localhost:5999',
             KDS_URL: saved.KDS_URL || process.env.KDS_URL || 'http://192.168.1.83:9001',
-            ODOO_URL: saved.ODOO_URL || process.env.ODOO_URL || 'https://litz.posgo.cl',
+            ODOO_URL: saved.ODOO_URL || process.env.ODOO_URL || 'https://getit.posgo.cl',
             PRINTER_ENABLED: saved.PRINTER_ENABLED || process.env.PRINTER_ENABLED || 'true',
             PRINTER_TICKET_NAME: saved.PRINTER_TICKET_NAME || process.env.PRINTER_TICKET_NAME || '',
             FLEJE_PRINTER_NAME: saved.FLEJE_PRINTER_NAME || process.env.FLEJE_PRINTER_NAME || 'POS-80',

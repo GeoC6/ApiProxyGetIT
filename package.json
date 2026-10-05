@@ -1,6 +1,6 @@
 {
   "name": "api-autoservicio-intermedia",
-  "version": "1.1.0",
+  "version": "1.3.0",
   "description": "API intermedia para autoservicio yogurt - offline first con system tray y auto-start automático",
   "main": "main.js",
   "type": "module",
@@ -14,14 +14,15 @@
     "dist": "npm run build"
   },
   "build": {
-    "appId": "com.autoservicio.api.litz",
-    "productName": "Api Autoservicio Litz",
+    "appId": "com.autoservicio.api",
+    "productName": "Api autoservicio GetIT",
     "directories": {
       "output": "dist"
     },
     "asarUnpack": [
       "PrinterHelper.exe",
-      "LOGO_TRANSP_BG.png"
+      "LOGO_TRANSP_BG.png",
+      "getit_chile_logo.jpeg"
     ],
     "files": [
       "main.js",
@@ -38,6 +39,7 @@
       "realtime-logs.html",
       "PrinterHelper.exe",
       "LOGO_TRANSP_BG.png",
+      "getit_chile_logo.jpeg",
       "icono.ico",
       "restart_api.bat",
       "node_modules/**/*"
@@ -60,7 +62,7 @@
       "uninstallerIcon": "icono.ico",
       "createDesktopShortcut": "always",
       "createStartMenuShortcut": true,
-      "shortcutName": "Api Autoservicio Litz",
+      "shortcutName": "Api autoservicio GetIT",
       "runAfterFinish": true,
       "deleteAppDataOnUninstall": false,
       "perMachine": false,
