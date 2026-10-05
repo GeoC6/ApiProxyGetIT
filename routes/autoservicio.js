@@ -7,7 +7,7 @@ import https from 'https';
 
 const router = express.Router();
 
-const ODOO_URL = process.env.ODOO_URL || 'https://litz.posgo.cl';
+const ODOO_URL = process.env.ODOO_URL || 'https://getit.posgo.cl';
 
 const getXSignUrl = () => getSetting('XSIGN_URL', process.env.XSIGN_URL || 'http://localhost:5999');
 const getTbkUrl = () => getSetting('TBK_URL', process.env.TBK_URL || 'https://localhost:8001');
@@ -161,7 +161,7 @@ function buildDTEData(transactionData, tipoDTE = 39, invoiceCustomer = null, tot
         infoPagos: {
             Propina: parseFloat(sale_data.tip_amount || 0),
             CdgVendedor: session_data.company_data?.cashier_name || "autoservicio",
-            AjusteSencillo: 0,
+            AjusteSencillo: Math.round(sale_data.rounding_amount || 0),
             Vuelto: Math.round(sale_data.change_amount || 0),
             Pagos: (sale_data.payments || []).filter(p => p.monto > 0).map(p => ({
                 desc: p.name || (tbk_data.card_type === "DB" ? "DEBITO" : "CREDITO"),
@@ -947,7 +947,8 @@ function adaptAutoservicioToInternal(frontendData) {
         payments: safePayment,
         discounts: discounts,
         exchange_return_amount: parseFloat(order.exchange_return_amount || 0),
-        change_amount: parseFloat(order.change_amount || 0)
+        change_amount: parseFloat(order.change_amount || 0),
+        rounding_amount: parseFloat(order.rounding_amount || 0)
     };
 
     if (products && products.length > 0) {

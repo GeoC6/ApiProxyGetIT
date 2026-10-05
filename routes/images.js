@@ -4,7 +4,7 @@ import https from 'https';
 import { db } from '../database.js';
 
 const router = express.Router();
-const ODOO_URL = process.env.ODOO_URL || 'https://litz.posgo.cl';
+const ODOO_URL = process.env.ODOO_URL || 'https://getit.posgo.cl';
 
 const httpsAgent = new https.Agent({ keepAlive: true, rejectUnauthorized: true });
 

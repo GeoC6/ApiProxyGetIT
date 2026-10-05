@@ -11,7 +11,7 @@ const CACHE_TTL = 60 * 60 * 1000; // 1 hora
 // Cache por pos_config_id: { data, fetchedAt }
 const promotionsCache = new Map();
 
-const getOdooUrl = () => process.env.ODOO_URL || 'https://litz.posgo.cl';
+const getOdooUrl = () => process.env.ODOO_URL || 'https://getit.posgo.cl';
 
 const fetchFromOdoo = async (pos_config_id) => {
     const response = await axios.get(`${getOdooUrl()}/xsolution_loyalty/promotions`, {

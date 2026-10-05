@@ -4,7 +4,7 @@ import { db } from '../database.js';
 import { log } from '../services/logger.js';
 
 const router = express.Router();
-const ODOO_URL = process.env.ODOO_URL || 'https://litz.posgo.cl';
+const ODOO_URL = process.env.ODOO_URL || 'https://getit.posgo.cl';
 
 let lastSync = null;          // hora de la última sync EXITOSA (respaldo si no hay endpoint de versión)
 let lastVersion = null;       // versión de res_partner de la última sync EXITOSA

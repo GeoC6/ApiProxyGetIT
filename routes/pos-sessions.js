@@ -5,10 +5,16 @@ import { getSetting } from '../database.js';
 
 const router = express.Router();
 
-const ODOO_URL = process.env.ODOO_URL || 'https://litz.posgo.cl';
+const ODOO_URL = process.env.ODOO_URL || 'https://getit.posgo.cl';
 
 let sessionsCache = new Map();
 const SESSION_CACHE_TTL = 60 * 60 * 1000;
+
+export const clearPosSessionsCache = () => {
+    const size = sessionsCache.size;
+    sessionsCache.clear();
+    return size;
+};
 
 const getSimpleErrorMessage = (error) => {
     if (error.code) {
