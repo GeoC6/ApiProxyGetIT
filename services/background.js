@@ -2,6 +2,7 @@
 import { getPendingTransactions, markAsCompleted, markAsFailed, saveDTEResponse, getDTEResponse, getNextInternalVoucherNumber } from '../database.js';
 import { log } from './logger.js';
 import { addCriticalError } from '../routes/critical-errors.js';
+import { fechaChile } from './fechas.js';
 
 const BACKGROUND_INTERVAL = parseInt(process.env.BACKGROUND_INTERVAL) || 30000;
 const XSIGN_URL = process.env.XSIGN_URL || 'http://localhost:5999';
@@ -113,7 +114,9 @@ function buildDTEData(transactionData) {
         Encabezado: {
             IdDoc: {
                 TipoDTE: 39,
-                FchEmis: new Date().toISOString().split('T')[0]
+                // Fecha Chile del momento de la venta, no de cuando la cola genera el DTE
+                // (antes era la fecha UTC del momento de envío).
+                FchEmis: fechaChile(sale_data.sale_date)
             },
             Emisor: {
                 RUTEmisor: session_data.company_data?.vat || '76.000.000-0',
@@ -311,6 +314,9 @@ async function sendToOdoo(transactionData, dteResponse, isInternalVoucher = fals
             },
             tip_amount: parseFloat(sale_data.tip_amount || 0),
             customer_comment: sale_data.note || "",
+            // Hora real de la venta: si la cola sube la orden más tarde, Odoo igual la
+            // registra en su fecha (antes quedaba con la hora de subida).
+            ...(sale_data.sale_date ? { date_order: sale_data.sale_date } : {}),
             dte_folio: isInternalVoucher ? voucherNumber : (dteResponse?.folio || 0),
             dte_json: dteResponse ? JSON.stringify(dteResponse.originalDTE) : null,
             tipo_dte: isInternalVoucher ? '00' : (dteResponse?.originalDTE?.Encabezado?.IdDoc?.TipoDTE || sale_data.tipo_dte),

@@ -1,5 +1,6 @@
 ﻿import express from 'express';
 import { saveTransactionWithOrder, getNextInternalVoucherNumber, getSetting } from '../database.js';
+import { ahoraUtcOdoo, fechaChile } from '../services/fechas.js';
 import { log } from '../services/logger.js';
 import printerService from '../services/printerService.js';
 import axios from 'axios';
@@ -128,16 +129,20 @@ function buildDTEData(transactionData, tipoDTE = 39, invoiceCustomer = null, tot
         };
     }
 
+    // Fecha de emisión en hora Chile del momento de la venta (antes era la fecha UTC:
+    // desde las 21:00 la boleta salía con fecha del día siguiente).
+    const fchEmis = fechaChile(sale_data.sale_date);
+
     const dteData = {
         Encabezado: {
             IdDoc: tipoDTE === 41 ? {
                 TipoDTE: tipoDTE,
                 Folio: 0,
-                FchEmis: new Date().toISOString().split('T')[0],
+                FchEmis: fchEmis,
                 IndServicio: "3"
             } : {
                 TipoDTE: tipoDTE,
-                FchEmis: new Date().toISOString().split('T')[0],
+                FchEmis: fchEmis,
                 IndServicio: "3"
             },
             Emisor: tipoDTE === 41 ? {
@@ -727,8 +732,15 @@ router.post('/create-refund', async (req, res) => {
         }
 
         const sessionId = parseInt(session_id);
-        const today = new Date().toISOString().split('T')[0];
-        const refDate = original_date ? original_date.split('T')[0].split(' ')[0] : today;
+        // Fechas en hora Chile (antes UTC: después de las 21:00 salían con el día siguiente).
+        // original_date viene de date_order de Odoo (UTC con hora): se convierte a la fecha
+        // Chile, que es la que tiene la boleta original. Si viene solo la fecha, se usa tal cual.
+        const today = fechaChile();
+        const refDate = !original_date
+            ? today
+            : /\d{2}:\d{2}/.test(String(original_date))
+                ? fechaChile(String(original_date).replace('T', ' ').replace('Z', '').slice(0, 19))
+                : String(original_date).slice(0, 10);
         const tipoDTEOrig = parseInt(original_tipo_dte);
 
         // Calcular total desde las líneas seleccionadas
@@ -939,8 +951,12 @@ function adaptAutoservicioToInternal(frontendData) {
         fecha_contable: new Date().toISOString().split('T')[0]
     };
 
+    const roundingAmount = parseFloat(order.rounding_amount || 0);
     const sale_data = {
-        total: totalPayments,
+        // La boleta va por el valor EXACTO de la venta. Con redondeo de efectivo el pago
+        // queda redondeado (ej. $730 por una venta de $726): el redondeo se informa aparte
+        // como AjusteSencillo y no debe inflar el total ni la base del IVA.
+        total: totalPayments - roundingAmount,
         tip_amount: parseFloat(tip_amount || 0),
         note: note || "",
         products: [],
@@ -948,7 +964,10 @@ function adaptAutoservicioToInternal(frontendData) {
         discounts: discounts,
         exchange_return_amount: parseFloat(order.exchange_return_amount || 0),
         change_amount: parseFloat(order.change_amount || 0),
-        rounding_amount: parseFloat(order.rounding_amount || 0)
+        rounding_amount: roundingAmount,
+        // Hora real de la venta (UTC, formato Odoo). La orden puede subir a Odoo más tarde
+        // desde la cola; sin esto quedaba con la hora de subida y no la de la venta.
+        sale_date: ahoraUtcOdoo()
     };
 
     if (products && products.length > 0) {
@@ -1038,6 +1057,7 @@ function adaptIM30ToInternal(frontendData, tbkData) {
         total: calculatedTotal,
         tip_amount: parseFloat(tip_amount || 0),
         note: note || '',
+        sale_date: ahoraUtcOdoo(),
         products: [],
         payments: [{
             id: 1,

@@ -57,12 +57,48 @@ const SESSION_FULL_CACHE = new Map();
 // hash de versión cuando vuelve internet.
 const SESSION_FULL_CACHE_TTL = 7 * 24 * 60 * 60 * 1000; // 7 días
 
+// Medios de pago: la config (visible / modo de cierre / posición) viene de Odoo.
+// Entradas de caché guardadas antes de esa config no la traen: se completan con
+// valores seguros para que el frontend siempre reciba el mismo contrato.
+const normalizePaymentMethods = (sessionOnly) => {
+    if (!sessionOnly || !Array.isArray(sessionOnly.payment_methods)) return sessionOnly;
+    sessionOnly.payment_methods = sessionOnly.payment_methods.map((m, idx) => ({
+        ...m,
+        is_cash_count: m.is_cash_count === true,
+        visible: m.visible !== false,
+        close_mode: m.close_mode === 'manual' ? 'manual' : 'auto',
+        sequence: Number.isInteger(m.sequence) ? m.sequence : (idx + 1) * 10,
+    }));
+    return sessionOnly;
+};
+
 // Setea el cache en memoria Y lo persiste en disco (write-through) — así sobrevive a
 // reinicios / cortes de luz.
 const setFullCache = (pin, entry) => {
     SESSION_FULL_CACHE.set(pin, entry);
     saveSessionFullCache(pin, JSON.stringify(entry), entry.ts || Date.now())
         .catch((e) => log.warn('No se pudo persistir el cache de sesión:', e.message));
+};
+
+// El login (sin caché) es el único camino donde un timeout/hipo de red con Odoo
+// se ve en la caja como "falla el login" (silencioso, ver pos_validate_session
+// más abajo). Odoo además es pesado en este endpoint (catálogo completo +
+// promociones + medios de pago), así que un reintento evita que un hipo
+// puntual (sobre todo con PDV y Totem pegándole a la vez) tumbe el login.
+const postToOdooWithRetry = async (url, body, { timeout = 120000, retries = 1, retryDelayMs = 3000 } = {}) => {
+    let lastErr;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+        try {
+            return await axios.post(url, body, { timeout, headers: { 'Content-Type': 'application/json' }, httpsAgent });
+        } catch (err) {
+            lastErr = err;
+            if (attempt < retries) {
+                log.warn(`POST ${url} falló (intento ${attempt + 1}/${retries + 1}): ${err.message}. Reintentando...`);
+                await new Promise(r => setTimeout(r, retryDelayMs));
+            }
+        }
+    }
+    throw lastErr;
 };
 
 const getDataVersionFromOdoo = async (configId) => {
@@ -84,11 +120,8 @@ const SESSION_LOADING_JOBS = new Map();
 const JOB_TTL = 15 * 60 * 1000; // 15 min
 
 const refreshSessionInBackground = (pin, body) => {
-    axios.post(`${ODOO_URL}/pos_validate_session`, body, {
-        timeout: 120000,
-        headers: { 'Content-Type': 'application/json' },
-        httpsAgent
-    }).then(async response => {
+    postToOdooWithRetry(`${ODOO_URL}/pos_validate_session`, body, { timeout: 120000, retries: 1, retryDelayMs: 3000 })
+    .then(async response => {
         const fullData = response.data;
         if (fullData?.authenticated) {
             const version = await getDataVersionFromOdoo(fullData.config_id);
@@ -196,6 +229,7 @@ app.post('/pos_validate_session', async (req, res) => {
         }
 
         const cached = SESSION_FULL_CACHE.get(pinIngresado);
+        if (cached?.sessionOnly) normalizePaymentMethods(cached.sessionOnly);
         const hasFreshCache = cached && Date.now() - cached.ts < SESSION_FULL_CACHE_TTL;
 
         // 2. Si hay caché → verificar versión antes de responder
@@ -235,11 +269,7 @@ app.post('/pos_validate_session', async (req, res) => {
 
         setImmediate(async () => {
             try {
-                const response = await axios.post(`${ODOO_URL}/pos_validate_session`, req.body, {
-                    timeout: 120000,
-                    headers: { 'Content-Type': 'application/json' },
-                    httpsAgent
-                });
+                const response = await postToOdooWithRetry(`${ODOO_URL}/pos_validate_session`, req.body, { timeout: 120000, retries: 1, retryDelayMs: 3000 });
                 const fullData = response.data;
                 if (fullData?.authenticated) {
                     const version = await getDataVersionFromOdoo(fullData.config_id);
@@ -392,8 +422,11 @@ app.post('/pos_close_session', async (req, res) => {
         });
         res.json(response.data);
     } catch (error) {
-        log.error('Error en proxy /pos_close_session:', error.message);
-        res.status(500).json({ success: false, error: error.message });
+        // Si Odoo respondió con error (ej. el asiento de cierre no cuadra), reenviar su
+        // mensaje tal cual para que el cajero vea el motivo real y no un "status code 500".
+        const odooError = error.response?.data?.error;
+        log.error('Error en proxy /pos_close_session:', odooError || error.message);
+        res.status(error.response?.status || 500).json({ success: false, error: odooError || error.message });
     }
 });
 
@@ -574,7 +607,13 @@ async function start() {
         // Cargar el cache de sesión persistido (para operar offline tras un corte de luz).
         try {
             const rows = await loadSessionFullCache();
-            for (const r of rows) { try { SESSION_FULL_CACHE.set(r.pin, JSON.parse(r.data)); } catch { /* fila corrupta */ } }
+            for (const r of rows) {
+                try {
+                    const entry = JSON.parse(r.data);
+                    if (entry?.sessionOnly) normalizePaymentMethods(entry.sessionOnly);
+                    SESSION_FULL_CACHE.set(r.pin, entry);
+                } catch { /* fila corrupta */ }
+            }
             if (rows.length) log.info(`Cache de sesión cargado desde disco: ${rows.length} sesión(es)`);
         } catch (e) { log.warn('No se pudo cargar el cache de sesión desde disco:', e.message); }
         const savedPort = await getSetting('APP_PORT', process.env.PORT || '9000');
