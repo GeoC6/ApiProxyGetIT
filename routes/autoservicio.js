@@ -1,10 +1,12 @@
 ﻿import express from 'express';
-import { saveTransactionWithOrder, getNextInternalVoucherNumber, getSetting } from '../database.js';
+import { saveTransactionWithOrder, getNextInternalVoucherNumber, getSetting, completarDTETransaccion, marcarEstadoDTE } from '../database.js';
 import { ahoraUtcOdoo, fechaChile } from '../services/fechas.js';
 import { log } from '../services/logger.js';
 import printerService from '../services/printerService.js';
 import axios from 'axios';
 import https from 'https';
+import fs from 'fs';
+import path from 'path';
 
 const router = express.Router();
 
@@ -400,6 +402,97 @@ async function generateDTEWeb(transactionData, tipoDTE, invoiceCustomer, totalEx
     };
 }
 
+// ── Venta guardada ANTES de pedir el folio ──
+// Antes se pedía la boleta y recién después se guardaba la venta: si algo fallaba entre medio (sobre todo
+// XSign que firma pero su respuesta no llega a tiempo) el folio quedaba gastado y la venta no existía en
+// ningún lado. Ahora la venta se guarda primero ('firmando') y según la respuesta:
+//   - OK con folio          -> se anota el folio y pasa a la cola normal hacia Odoo ('pending').
+//   - XSign respondió error -> 'dte_rechazado': no firmó, el folio NO se gastó. No se sube.
+//   - Sin respuesta         -> 'dte_por_confirmar': pudo haber firmado. No se sube; se revisa a mano.
+// Factura web (vía Odoo): un error de Odoo no garantiza que el servicio web no haya firmado, así que solo
+// se considera rechazada si ni siquiera se pudo conectar; cualquier otro error queda por confirmar.
+// Si firmó pero no se puede anotar el folio en la cache.db, la venta va a respaldo_ventas/ (no se borra).
+
+function xsignNoFirmo(err, web) {
+    if (['ECONNREFUSED', 'ENOTFOUND', 'EHOSTUNREACH', 'ENETUNREACH'].includes(err?.code)) return true; // nunca le llegó
+    if (web) return false;
+    if (err && err.response) return true;                                   // XSign respondió con un error HTTP
+    if (/^XSign Error 400/.test(err?.message || '')) return true;           // rechazo que ya viene traducido
+    return false;                                                           // timeout / conexión cortada: dudoso
+}
+
+async function carpetaRespaldo() {
+    try {
+        const electron = await import('electron');
+        const app = electron?.app || electron?.default?.app;
+        if (app && app.getPath) return path.join(app.getPath('userData'), 'respaldo_ventas');
+    } catch (e) { /* fuera de Electron */ }
+    return path.join(process.cwd(), 'respaldo_ventas');
+}
+
+async function respaldarVenta(transactionId, adaptedData, dteResponse, motivo) {
+    try {
+        const dir = await carpetaRespaldo();
+        fs.mkdirSync(dir, { recursive: true });
+        fs.appendFileSync(path.join(dir, `ventas_${fechaChile()}.jsonl`), JSON.stringify({
+            fecha: new Date().toISOString(), transaction_id: transactionId, folio: dteResponse?.folio ?? null,
+            motivo, dte_response: dteResponse, venta: adaptedData
+        }) + '\n');
+        log.error(` Venta con folio ${dteResponse?.folio} respaldada en ${dir} (${motivo})`);
+    } catch (e) {
+        log.error(` NO se pudo respaldar la venta con folio ${dteResponse?.folio}: ${e.message}`);
+    }
+}
+
+async function guardarYFirmar({ adaptedData, sessionId, source, terminalName, whatsappNumber, tipoDTE = 39, invoiceCustomer = null, totalExempt = 0, web = false }) {
+    // 1) Guardar la venta. Si esto falla no se pide folio: no se gasta nada y el cajero puede reintentar.
+    let orderResult;
+    try {
+        orderResult = await saveTransactionWithOrder(adaptedData, sessionId, source, terminalName, whatsappNumber, null, false, null, { status: 'firmando' });
+    } catch (dbError) {
+        log.error(' No se pudo guardar la venta antes de pedir el folio:', dbError.message);
+        throw new Error(`No se pudo guardar la venta (no se emitió boleta, se puede reintentar): ${dbError.message}`);
+    }
+    const txId = orderResult.transactionId;
+
+    // 2) Pedir la boleta
+    let dteResponse;
+    try {
+        dteResponse = web
+            ? await generateDTEWeb(adaptedData, tipoDTE, invoiceCustomer, totalExempt, sessionId)
+            : await generateDTE(adaptedData, tipoDTE, invoiceCustomer, totalExempt);
+        if (dteResponse?.folio == null || dteResponse.folio === '') {
+            throw Object.assign(new Error('Respondió sin folio'), { sinFolio: true });
+        }
+    } catch (dteError) {
+        const rechazado = !dteError.sinFolio && xsignNoFirmo(dteError, web);
+        const estado = rechazado ? 'dte_rechazado' : 'dte_por_confirmar';
+        await marcarEstadoDTE(txId, estado, dteError.message)
+            .catch((e) => log.error(` No se pudo marcar la transacción ${txId} como ${estado}: ${e.message}`));
+        if (rechazado) {
+            log.error(` La boleta fue rechazada (transacción ${txId}, folio no gastado): ${dteError.message}`);
+            throw new Error(`No se pudo generar el DTE: ${dteError.message}`);
+        }
+        log.error(` Sin respuesta al pedir la boleta (transacción ${txId}): pudo haberse emitido. Queda "folio por confirmar". ${dteError.message}`);
+        throw new Error(`No se recibió respuesta al emitir la boleta: pudo haberse emitido. Revisa la transacción ${txId} antes de cobrar de nuevo. (${dteError.message})`);
+    }
+
+    // 3) Anotar el folio (con reintentos: la boleta ya existe)
+    let anotado = false;
+    for (let i = 0; i < 3 && !anotado; i++) {
+        try {
+            await completarDTETransaccion(txId, dteResponse);
+            anotado = true;
+        } catch (e) {
+            log.error(` No se pudo anotar el folio ${dteResponse.folio} en la transacción ${txId} (intento ${i + 1}): ${e.message}`);
+            await new Promise((r) => setTimeout(r, 300));
+        }
+    }
+    if (!anotado) await respaldarVenta(txId, adaptedData, dteResponse, 'no se pudo anotar el folio en la cache.db');
+
+    return { orderResult, dteResponse };
+}
+
 router.post('/create-order', async (req, res) => {
     try {
         log.info('Nueva orden de autoservicio recibida');
@@ -438,6 +531,7 @@ router.post('/create-order', async (req, res) => {
 
         let dteResponse = null;
         let voucherNumber = null;
+        let orderResult;
 
         if (isVoucher) {
             log.info('═══════════════════════════════════════════════════════════');
@@ -451,28 +545,27 @@ router.post('/create-order', async (req, res) => {
 
             log.info(`  Número de vale generado: ${voucherNumber}`);
             log.info('═══════════════════════════════════════════════════════════');
-        } else {
-            try {
-                dteResponse = (tipoDTE === 33 && invoiceWeb)
-                    ? await generateDTEWeb(adaptedData, tipoDTE, invoiceCustomer, totalExempt, sessionId)
-                    : await generateDTE(adaptedData, tipoDTE, invoiceCustomer, totalExempt);
-                log.info(` DTE tipo ${tipoDTE}${invoiceWeb && tipoDTE === 33 ? ' (WEB)' : ''} generado con folio: ${dteResponse.folio}`);
-            } catch (dteError) {
-                log.error(' Error generando DTE:', dteError.message);
-                throw new Error(`No se pudo generar el DTE: ${dteError.message}`);
-            }
         }
 
-        const orderResult = await saveTransactionWithOrder(
-            adaptedData,
-            sessionId,
-            'autoservicio',
-            `Terminal-${sessionId}`,
-            whatsappNumber,
-            dteResponse,
-            isVoucher,
-            voucherNumber
-        );
+        if (isVoucher) {
+            // Vale interno: no lleva folio, se guarda directo como siempre.
+            orderResult = await saveTransactionWithOrder(
+                adaptedData,
+                sessionId,
+                'autoservicio',
+                `Terminal-${sessionId}`,
+                whatsappNumber,
+                null,
+                true,
+                voucherNumber
+            );
+        } else {
+            ({ orderResult, dteResponse } = await guardarYFirmar({
+                adaptedData, sessionId, source: 'autoservicio', terminalName: `Terminal-${sessionId}`,
+                whatsappNumber, tipoDTE, invoiceCustomer, totalExempt, web: tipoDTE === 33 && invoiceWeb
+            }));
+            log.info(` DTE tipo ${tipoDTE}${invoiceWeb && tipoDTE === 33 ? ' (WEB)' : ''} generado con folio: ${dteResponse.folio}`);
+        }
 
         if (isVoucher) {
             log.success(`Vale interno ${voucherNumber} guardado como orden ${orderResult.orderNumber}`);
@@ -627,27 +720,11 @@ router.post('/create-order-im30', async (req, res) => {
         log.info('PASO 2: Adaptando datos IM30...');
         const adaptedData = adaptIM30ToInternal(req.body, tbkResponse.data);
 
-        log.info('PASO 3: Generando DTE...');
-        let dteResponse;
-        try {
-            dteResponse = await generateDTE(adaptedData);
-            log.success(` DTE generado con folio: ${dteResponse.folio}`);
-        } catch (dteError) {
-            log.error(' Error generando DTE:', dteError.message);
-            throw new Error(`No se pudo generar el DTE: ${dteError.message}`);
-        }
-
-        log.info('PASO 4: Guardando en base de datos...');
-        const orderResult = await saveTransactionWithOrder(
-            adaptedData,
-            sessionId,
-            'autoservicio-im30',
-            `IM30-${sessionId}`,
-            whatsapp,
-            dteResponse,
-            false,
-            null
-        );
+        log.info('PASO 3: Guardando la venta y generando DTE...');
+        const { orderResult, dteResponse } = await guardarYFirmar({
+            adaptedData, sessionId, source: 'autoservicio-im30', terminalName: `IM30-${sessionId}`, whatsappNumber: whatsapp
+        });
+        log.success(` DTE generado con folio: ${dteResponse.folio}`);
 
         log.success('═══════════════════════════════════════════════════════════');
         log.success(` ORDEN COMPLETADA: ${orderResult.orderNumber}`);

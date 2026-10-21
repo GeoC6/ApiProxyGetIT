@@ -382,8 +382,11 @@ export const saveTransactionWithOrder = (
     whatsappNumber = null,
     dteResponse = null,
     isInternalVoucher = false,
-    voucherNumber = null
+    voucherNumber = null,
+    { status = 'pending' } = {}
 ) => {
+    // status: 'pending' (normal: el procesador la sube a Odoo) o 'firmando' (venta guardada antes de pedir
+    // el folio; el procesador no la toca hasta que tenga folio, ver completarDTETransaccion).
     return new Promise(async (resolve, reject) => {
         try {
             const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
@@ -410,8 +413,9 @@ export const saveTransactionWithOrder = (
                     folio_dte,
                     dte_response,
                     is_internal_voucher,
-                    internal_voucher_number
-                ) VALUES (?, ?, 'pendiente', ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?)
+                    internal_voucher_number,
+                    status
+                ) VALUES (?, ?, 'pendiente', ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?)
             `);
 
             stmt.run([
@@ -425,7 +429,8 @@ export const saveTransactionWithOrder = (
                 folioNumber,
                 dteResponseJson,
                 isInternalVoucher ? 1 : 0,
-                voucherNumber
+                voucherNumber,
+                status
             ], function (err) {
                 if (err) {
                     reject(err);
@@ -457,6 +462,31 @@ export const saveTransactionWithOrder = (
         }
     });
 };
+
+// La boleta salió (XSign o el servicio web respondió con folio): se anota y la venta pasa a la cola normal
+// hacia Odoo. Solo desde 'firmando' o 'dte_por_confirmar', para no pisar una venta que ya siguió su curso.
+export const completarDTETransaccion = (transactionId, dteResponse) => new Promise((resolve, reject) => {
+    db.run(
+        `UPDATE transactions SET folio_dte = ?, dte_response = ?, status = 'pending', error_message = NULL
+         WHERE id = ? AND status IN ('firmando', 'dte_por_confirmar')`,
+        [dteResponse?.folio != null ? String(dteResponse.folio) : null, JSON.stringify(dteResponse), transactionId],
+        function (err) {
+            if (err) return reject(err);
+            if (!this.changes) return reject(new Error(`La transacción ${transactionId} no estaba esperando su folio`));
+            resolve();
+        }
+    );
+});
+
+// No salió la boleta: 'dte_rechazado' (respondió error: el folio no se gastó) o 'dte_por_confirmar'
+// (no respondió: pudo haber firmado). Ninguno de los dos se sube a Odoo.
+export const marcarEstadoDTE = (transactionId, status, motivo) => new Promise((resolve, reject) => {
+    db.run(
+        `UPDATE transactions SET status = ?, error_message = ?, processed_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'firmando'`,
+        [status, String(motivo || '').slice(0, 500), transactionId],
+        (err) => (err ? reject(err) : resolve())
+    );
+});
 
 export const updateOrderStatus = (transactionId, newStatus) => {
     return new Promise((resolve, reject) => {
