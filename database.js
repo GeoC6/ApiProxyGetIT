@@ -175,6 +175,16 @@ export const initDatabase = () => {
                 )
             `, () => { });
 
+            // Última respuesta de promociones por caja: si Odoo no responde tras un
+            // reinicio, el PDV sigue aplicando promos (antes se vendía a precio lleno).
+            db.run(`
+                CREATE TABLE IF NOT EXISTS promotions_cache (
+                    pos_config_id TEXT PRIMARY KEY,
+                    data TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL
+                )
+            `, () => { });
+
             db.run(`
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
@@ -206,6 +216,15 @@ export const loadSessionFullCache = () => new Promise((resolve, reject) => {
 
 export const clearSessionFullCache = () => new Promise((resolve) => {
     db.run(`DELETE FROM session_full_cache`, [], () => resolve());
+});
+
+// --- Cache persistente de promociones (por pos_config_id) ---
+export const savePromotionsCache = (posConfigId, data, updatedAt) => new Promise((resolve, reject) => {
+    db.run(`INSERT OR REPLACE INTO promotions_cache (pos_config_id, data, updated_at) VALUES (?, ?, ?)`, [String(posConfigId), data, updatedAt], (err) => (err ? reject(err) : resolve()));
+});
+
+export const loadPromotionsCache = (posConfigId) => new Promise((resolve, reject) => {
+    db.get(`SELECT data, updated_at FROM promotions_cache WHERE pos_config_id = ?`, [String(posConfigId)], (err, row) => (err ? reject(err) : resolve(row || null)));
 });
 
 export const saveTransaction = (data) => {
