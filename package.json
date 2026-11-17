@@ -1,6 +1,6 @@
 {
   "name": "api-autoservicio-intermedia",
-  "version": "1.3.3",
+  "version": "1.3.2",
   "description": "API intermedia para autoservicio yogurt - offline first con system tray y auto-start automático",
   "main": "main.js",
   "type": "module",
